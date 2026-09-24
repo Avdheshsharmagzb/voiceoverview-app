@@ -1,0 +1,125 @@
+{
+  "project_name": "Samvad Editorial News Moderation Command Center",
+  "app_type": "dashboard",
+  "archetype": "Swiss Editorial & High-Contrast Precision",
+  "theme": {
+    "default_mode": "dark",
+    "supported_modes": ["dark", "light"],
+    "background_dark": "#0B0F17",
+    "surface_dark": "#111827",
+    "surface_border_dark": "rgba(255, 255, 255, 0.08)",
+    "background_light": "#F8FAFC",
+    "surface_light": "#FFFFFF",
+    "surface_border_light": "rgba(15, 23, 42, 0.08)"
+  },
+  "typography": {
+    "font_family_display": "'Outfit', 'Cinzel', sans-serif",
+    "font_family_editorial_hindi": "'Rozha One', 'Noto Sans Devanagari', 'Hind', serif",
+    "font_family_body": "'Plus Jakarta Sans', 'Inter', sans-serif",
+    "forbidden_fonts": ["Space Grotesk"],
+    "hierarchy": {
+      "dashboard_title": "text-2xl md:text-3xl font-bold tracking-tight",
+      "section_heading": "text-xl font-semibold tracking-tight",
+      "card_headline": "text-base font-semibold leading-snug",
+      "hindi_content_text": "font-serif text-base leading-relaxed text-emerald-400 dark:text-emerald-300 font-medium",
+      "labels": "text-xs font-semibold uppercase tracking-wider text-muted-foreground"
+    }
+  },
+  "colors": {
+    "primary_cta": {
+      "pending_action": "#E11D48",
+      "pending_action_hover": "#BE123C",
+      "text": "#FFFFFF",
+      "glow": "rgba(225, 29, 72, 0.25)"
+    },
+    "forbidden_colors": ["#1B93A4", "#7351B7"],
+    "status_badges": {
+      "Pending_Review": {
+        "bg": "bg-amber-500/15 dark:bg-amber-500/20",
+        "text": "text-amber-700 dark:text-amber-300",
+        "border": "border-amber-500/30",
+        "label": "Pending Review"
+      },
+      "Rewritten_Pending_Publish": {
+        "bg": "bg-indigo-500/15 dark:bg-indigo-500/20",
+        "text": "text-indigo-700 dark:text-indigo-300",
+        "border": "border-indigo-500/30",
+        "label": "Rewritten - Pending Publish"
+      },
+      "Published": {
+        "bg": "bg-emerald-500/15 dark:bg-emerald-500/20",
+        "text": "text-emerald-700 dark:text-emerald-300",
+        "border": "border-emerald-500/30",
+        "label": "Published"
+      }
+    }
+  },
+  "core_feature_specifications": {
+    "approve_for_rewrite_button": {
+      "label": "Approve for Rewrite",
+      "required_visibility": "MUST be prominently rendered right next to every news item with status 'Pending_Review'. Never hide under submenus or overflow dropdowns.",
+      "action_behavior": "Triggers POST request to AI rewrite API endpoint -> updates item state locally to loading state ('Rewriting in Journalistic Hindi...') -> updates status to 'Rewritten_Pending_Publish' upon completion with Hindi translation preview -> triggers Sonner toast notification.",
+      "data_testid": "approve-for-rewrite-btn-${item.id}"
+    },
+    "news_status_filters": [
+      {"key": "ALL", "label": "All Items"},
+      {"key": "Pending_Review", "label": "Pending Review"},
+      {"key": "Rewritten_Pending_Publish", "label": "Rewritten (Pending Publish)"},
+      {"key": "Published", "label": "Published"}
+    ],
+    "content_inspection_view": "Side-by-side or split pane view comparing Original Source Draft (English/Regional) vs AI Journalistic Hindi Rewrite with grammar, entity highlights, and editorial confidence badge."
+  },
+  "image_urls": [
+    {
+      "url": "https://images.unsplash.com/photo-1742805382149-3c2f0cd0f300?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NzZ8MHwxfHNlYXJjaHwxfHxuZXdzJTIwam91cm5hbGlzdCUyMGJyb2FkY2FzdCUyMGVkaXRvcmlhbHxlbnwwfHx8fDE3OTAyODE4Nzh8MA&ixlib=rb-4.1.0&q=85",
+      "category": "news_studio",
+      "description": "Breaking news editorial studio background"
+    },
+    {
+      "url": "https://images.unsplash.com/photo-1759659334772-c3a05b8178e9?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NzZ8MHwxfHNlYXJjaHw0fHxuZXdzJTIwam91cm5hbGlzdCUyMGJyb2FkY2FzdCUyMGVkaXRvcmlhbHxlbnwwfHx8fDE3OTAyODE4Nzh8MA&ixlib=rb-4.1.0&q=85",
+      "category": "field_reporter",
+      "description": "Field journalist covering live breaking event"
+    },
+    {
+      "url": "https://images.unsplash.com/photo-1575507479993-7bb702d5e966?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NzZ8MHwxfHNlYXJjaHwyfHxuZXdzJTIwam91cm5hbGlzdCUyMGJyb2FkY2FzdCUyMGVkaXRvcmlhbHxlbnwwfHx8fDE3OTAyODE4Nzh8MA&ixlib=rb-4.1.0&q=85",
+      "category": "broadcast_camera",
+      "description": "Broadcast news studio setup camera"
+    },
+    {
+      "url": "https://images.pexels.com/photos/10464787/pexels-photo-10464787.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "category": "reporter_interview",
+      "description": "Journalist with microphone in the field"
+    }
+  ],
+  "layout_strategy": {
+    "bento_mode": "High Density Grid (Mode B)",
+    "container_padding": "p-4 sm:p-6 lg:p-8",
+    "grid_structure": "grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6",
+    "card_style": "rounded-xl border border-border bg-card shadow-sm hover:shadow-md transition-all duration-200 p-5 space-y-4"
+  },
+  "testing_attributes": {
+    "rules": "All interactive elements (buttons, inputs, tabs, filter chips, dialog triggers, status badges) MUST have explicit kebab-case data-testid attributes.",
+    "key_testids": [
+      "approve-for-rewrite-btn-${id}",
+      "status-badge-${id}",
+      "news-item-card-${id}",
+      "filter-tab-${status}",
+      "add-news-btn",
+      "news-search-input",
+      "publish-news-btn-${id}",
+      "original-content-pane-${id}",
+      "hindi-rewritten-pane-${id}",
+      "compare-drawer-trigger-${id}"
+    ]
+  },
+  "instructions_to_main_agent": [
+    "Ensure FastAPI backend has routes for GET /api/news, POST /api/news, POST /api/news/{id}/approve-rewrite, and POST /api/news/{id}/publish.",
+    "Backend AI rewrite function should translate/rewrite content into authentic high-quality journalistic Hindi ('Patrakariya Hindi').",
+    "Include pre-seeded realistic sample news items with statuses 'Pending_Review', 'Rewritten_Pending_Publish', and 'Published' so the queue is rich upon first view.",
+    "For every news item with status 'Pending_Review', render a visible, clickable button labeled 'Approve for Rewrite' with a sparkle/spark icon right inside or alongside the item card/row.",
+    "When clicked, set local loading state, call backend rewrite endpoint, display the generated Hindi output, and update status badge dynamically to 'Rewritten_Pending_Publish'.",
+    "Provide a split-view or modal inspection drawer to compare Original text vs Rewritten Hindi text.",
+    "Use Sonner for toast notifications when items are rewritten or published.",
+    "Strictly follow all data-testid conventions specified."
+  ]
+}
