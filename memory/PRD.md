@@ -30,20 +30,21 @@ Pending_Review → (Approve for Rewrite / AI) → Rewritten_Pending_Publish → 
 - Cron: POST /api/cron/fetch-news
 
 ## Implemented
-- 2026-09-24: Approve for Rewrite + AI Hindi rewrite, dashboard, seed items (backend 9/9, frontend 100%)
-- 2026-10-02 (Phase 2):
-  - News Source Linking: Google News Hindi RSS across 19 categories (national, Delhi, HC/SC judgments,
-    Ghaziabad, Noida, Hapur/Bulandshahr, Baghpat, Meerut, Muzaffarnagar, economy, foreign, sports,
-    cinema, TV, dharma, mahapurush, ayurveda, yoga). Fetch Now + hourly cron, dedup by source_url.
-  - Compare & Edit: editable Hindi headline+body (PATCH) + re-rewrite with admin suggestions
-  - Public News Page at / (reader feed of Published stories, category ticker, lead + grid)
-  - Admin Login (JWT, register/login, seeded admin), protected write routes
-  - Attractive/punchy journalistic Hindi rewrite style
-  - Tested: backend 20/20, frontend 100% core flows
+- 2026-09-24: Approve for Rewrite + AI Hindi rewrite, dashboard, seed items
+- 2026-10-02 (Phase 2): News source linking (Google News Hindi RSS, 19 categories), Fetch Now + hourly cron,
+  Compare & Edit (editable Hindi + re-rewrite with suggestions), Public feed at /, JWT admin login
+- 2026-10-02 (Phase 3a): Full-article extraction at rewrite time (gnewsdecoder + trafilatura)
+- 2026-10-02 (Phase 3b):
+  - Image Library: auto-attach publisher og:image to each story (image_url)
+  - Prefetch On Import: background enrichment fetches full text + image for freshly imported drafts
+  - Fetch Scheduler UI: admin-configurable categories/query/count/enabled, persisted in db.settings (/api/fetch-config)
+  - Source Link Display: "मूल स्रोत देखें" link (resolved publisher URL) on each admin card
+  - Tested: backend 24/24, frontend 100%
 
 ## Notes / Known limitations
-- Manual photo upload stored as base64 data URL in Mongo (MVP). Consider object storage for scale.
-- RSS summaries are short (Google News); full-article scraping not implemented.
+- Manual photo upload stored as base64 data URL in Mongo (MVP). Fetched images use the publisher's hotlinked URL.
+- Existing pre-Phase-3 Published rows show a fallback image (no image_url); self-heals for new items.
+- Source link falls back to the Google News redirect URL until resolved_url is populated (still opens publisher in-browser).
 - Admin registration is open (any visitor can create an admin account).
 
 ## Backlog

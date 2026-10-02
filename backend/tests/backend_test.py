@@ -200,3 +200,68 @@ def test_approve_rewrite_with_instructions(session, auth_headers):
         assert created['id'] in [i['id'] for i in pub]
     finally:
         session.delete(f"{API}/news/{created['id']}", headers=auth_headers)
+
+
+
+# ---------- Fetch Config (Scheduler) ----------
+def test_fetch_config_get(session, auth_headers):
+    r = session.get(f"{API}/fetch-config", headers=auth_headers)
+    assert r.status_code == 200
+    cfg = r.json()["config"]
+    assert isinstance(cfg, list)
+    assert len(cfg) == 19, f"expected 19 categories, got {len(cfg)}"
+    for row in cfg:
+        assert set(row.keys()) >= {"category", "query", "count", "enabled"}
+        assert isinstance(row["enabled"], bool)
+        assert isinstance(row["count"], int)
+
+
+def test_fetch_config_requires_auth(session):
+    assert session.get(f"{API}/fetch-config").status_code == 401
+    assert session.put(f"{API}/fetch-config", json={"config": []}).status_code == 401
+
+
+def test_fetch_config_put_persists_and_clamps(session, auth_headers):
+    original = session.get(f"{API}/fetch-config", headers=auth_headers).json()["config"]
+    try:
+        modified = [dict(c) for c in original]
+        modified[0]["enabled"] = False
+        modified[0]["count"] = 100  # clamp to 50
+        modified[1]["count"] = -5   # clamp to 0
+        modified[2]["query"] = "TEST_scheduler_query"
+
+        put = session.put(f"{API}/fetch-config", json={"config": modified}, headers=auth_headers)
+        assert put.status_code == 200
+        saved = put.json()["config"]
+        assert saved[0]["enabled"] is False
+        assert saved[0]["count"] == 50
+        assert saved[1]["count"] == 0
+        assert saved[2]["query"] == "TEST_scheduler_query"
+
+        got = session.get(f"{API}/fetch-config", headers=auth_headers).json()["config"]
+        assert got[0]["enabled"] is False
+        assert got[0]["count"] == 50
+        assert got[1]["count"] == 0
+        assert got[2]["query"] == "TEST_scheduler_query"
+    finally:
+        session.put(f"{API}/fetch-config", json={"config": original}, headers=auth_headers)
+
+
+# ---------- Image / resolved url on approve-rewrite ----------
+def test_approve_rewrite_enriches_pending_with_source_url(session, auth_headers):
+    items = session.get(f"{API}/news", headers=auth_headers).json()
+    candidate = next(
+        (i for i in items if i.get("status") == "Pending_Review" and i.get("source_url")
+         and not i.get("full_content")),
+        None,
+    )
+    if not candidate:
+        pytest.skip("No eligible Pending_Review item with source_url available")
+    rid = candidate["id"]
+    r = session.post(f"{API}/news/{rid}/approve-rewrite", headers=auth_headers, timeout=120)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["status"] == "Rewritten_Pending_Publish"
+    assert data["rewritten_title"] and DEVANAGARI_RE.search(data["rewritten_title"])
+    enriched_any = bool(data.get("full_content")) or bool(data.get("image_url")) or bool(data.get("resolved_url"))
+    assert enriched_any, "Expected enrichment (full_content/image_url/resolved_url) to populate"

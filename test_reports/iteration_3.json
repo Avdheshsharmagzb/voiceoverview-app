@@ -1,0 +1,35 @@
+{
+  "summary": "Phase-3 testing of 4 new features: Image Library (og:image), Prefetch On Import (background enrichment), Fetch Scheduler UI (/api/fetch-config), Source Link Display. 24/24 backend pytest tests passed. Scheduler modal, source links, image rendering, and persistence verified via Playwright against the public URL.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "PublicFeed", "issues": ["All currently Published items use the same 'BREAKING NEWS' fallback image because historical Published rows have no image_url. Fallback itself is fine; this will self-heal once newly enriched items get published."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "SchedulerModal auto-closes on successful save (onClose() called inside save handler); harmless but worth documenting — tests must not expect the modal to remain open after save.",
+    "source-link href falls back to Google News redirect URL (source_url) when resolved_url hasn't been populated yet; the 'मूल स्रोत देखें' link therefore sometimes opens news.google.com instead of the publisher. Consider rendering the link only when resolved_url is set, OR prefer resolved_url ?? source_url with a visual hint.",
+    "run_fetch spawns asyncio.create_task(enrich_items(...)) with no bounded concurrency across concurrent fetch triggers — manual + cron overlap could pile up tasks. Semaphore(5) is per-call, not global.",
+    "fetch_article_data uses live HTTP (trafilatura) with no explicit per-URL timeout from the handler; a slow publisher can block an enrichment slot. Add asyncio.wait_for around _enrich_one.",
+    "FetchConfigUpdate.config is List[dict] (loose). Define a FetchConfigRow Pydantic model for strict validation (currently relying on try/except implicit coercions).",
+    "No index on news_items.source_url though dedup lookup runs on every imported candidate — add a unique sparse index to speed up and enforce uniqueness.",
+    "Known from prior iteration (still open): CORS_ORIGINS='*' with allow_credentials=True; no rate limiting on auth; AdminDashboard.jsx now 551 lines — split SchedulerModal/AddNewsModal/NewsCard into separate files."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (added 4 new tests: fetch_config GET/PUT auth/persistence/clamping, approve-rewrite enrichment)"
+  ],
+  "success_rate": {"backend": "100% (24/24)", "frontend": "100% new flows"},
+  "test_credentials": "admin@samvad.news / admin123 (JWT in localStorage['samvad_token']).",
+  "seed_data_creation": "No new seed. Backend test modified fetch_config temporarily and restored to original. Frontend test left scheduler-count-1 at 7 (originally 4) — main agent may wish to reset via UI or PUT /api/fetch-config.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Login submit button has data-testid='auth-submit-btn' (role='button' name='Sign In' collides with tab button). SchedulerModal closes automatically after save-scheduler-btn (do not wait for close-scheduler-btn afterwards). 48+ source-link elements render on Pending_Review view and open target=_blank with rel='noopener noreferrer'. Admin card image_url not yet populated for existing pending items (enrichment runs in background on fresh fetches only; approve-rewrite also enriches on-demand — confirmed by test_approve_rewrite_enriches_pending_with_source_url). Backend _id consistently excluded. BASE_URL via REACT_APP_BACKEND_URL only (no hardcoded).",
+  "rca of the issue": "N/A — all 4 new features (fetch-config CRUD, scheduler UI, source link display, enrichment on approve-rewrite) verified working. Public feed showing fallback image is expected because currently Published rows pre-date the image feature."
+}
