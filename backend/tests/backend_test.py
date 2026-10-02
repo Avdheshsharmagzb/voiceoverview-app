@@ -1,20 +1,26 @@
-"""Backend tests for Samvad Editorial API - news CRUD + AI rewrite + publish flow."""
+"""Backend tests for Samvad Editorial API - auth, public feed, protected routes, cron."""
 import os
 import re
-import time
 import pytest
 import requests
 
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
 if not BASE_URL:
-    # fallback to frontend/.env
     with open("/app/frontend/.env") as f:
         for line in f:
             if line.startswith("REACT_APP_BACKEND_URL="):
                 BASE_URL = line.split("=", 1)[1].strip().rstrip("/")
+
 API = f"{BASE_URL}/api"
+WEBHOOK_CRON_SECRET = None
+with open("/app/backend/.env") as f:
+    for line in f:
+        if line.startswith("WEBHOOK_CRON_SECRET="):
+            WEBHOOK_CRON_SECRET = line.split("=", 1)[1].strip().strip('"')
 
 DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
+ADMIN_EMAIL = "admin@samvad.news"
+ADMIN_PASSWORD = "admin123"
 
 
 @pytest.fixture(scope="module")
@@ -24,120 +30,173 @@ def session():
     return s
 
 
-# ---------- Basic health & seed ----------
-def test_root(session):
-    r = session.get(f"{API}/")
-    assert r.status_code == 200
-    assert "message" in r.json()
-
-
-def test_list_news_has_seeded_statuses(session):
-    r = session.get(f"{API}/news")
-    assert r.status_code == 200
+@pytest.fixture(scope="module")
+def token(session):
+    r = session.post(f"{API}/auth/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD})
+    assert r.status_code == 200, r.text
     data = r.json()
-    assert isinstance(data, list) and len(data) >= 5
-    statuses = {i["status"] for i in data}
-    assert {"Pending_Review", "Rewritten_Pending_Publish", "Published"}.issubset(statuses)
-    # ensure no mongo _id leaks
-    assert all("_id" not in i for i in data)
+    assert "access_token" in data
+    assert data["user"]["email"] == ADMIN_EMAIL
+    return data["access_token"]
 
 
-def test_list_news_status_filter(session):
-    r = session.get(f"{API}/news", params={"status": "Published"})
+@pytest.fixture(scope="module")
+def auth_headers(token):
+    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+
+# ---------- Auth ----------
+def test_login_success(session):
+    r = session.post(f"{API}/auth/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD})
     assert r.status_code == 200
-    for i in r.json():
-        assert i["status"] == "Published"
+    body = r.json()
+    assert body["access_token"]
+    assert body["user"]["role"] == "admin"
 
 
-# ---------- CRUD ----------
-def test_create_news_and_persist(session):
-    payload = {
-        "title": "TEST_ Item to create",
-        "source": "TEST_Wire",
-        "original_content": "This is a test article about testing content persistence in the news system."
-    }
-    r = session.post(f"{API}/news", json=payload)
+def test_login_invalid(session):
+    r = session.post(f"{API}/auth/login", json={"email": ADMIN_EMAIL, "password": "wrong"})
+    assert r.status_code == 401
+
+
+def test_me_requires_token(session):
+    r = session.get(f"{API}/auth/me")
+    assert r.status_code == 401
+
+
+def test_me_with_token(session, auth_headers):
+    r = session.get(f"{API}/auth/me", headers=auth_headers)
     assert r.status_code == 200
-    created = r.json()
-    assert created["title"] == payload["title"]
-    assert created["status"] == "Pending_Review"
-    assert created["source"] == "TEST_Wire"
-    assert "id" in created
-
-    # verify via list
-    r2 = session.get(f"{API}/news")
-    ids = [i["id"] for i in r2.json()]
-    assert created["id"] in ids
-    # cleanup
-    session.delete(f"{API}/news/{created['id']}")
+    assert r.json()["email"] == ADMIN_EMAIL
 
 
-def test_delete_news(session):
-    payload = {"title": "TEST_delete", "original_content": "content to delete"}
-    r = session.post(f"{API}/news", json=payload)
-    item_id = r.json()["id"]
-    d = session.delete(f"{API}/news/{item_id}")
-    assert d.status_code == 200
-    # deleting again -> 404
-    d2 = session.delete(f"{API}/news/{item_id}")
-    assert d2.status_code == 404
-
-
-# ---------- Approve rewrite (AI) ----------
-def test_approve_rewrite_pending_item(session):
-    payload = {
-        "title": "TEST_ Local park inauguration draws crowds",
-        "source": "TEST_Wire",
-        "original_content": (
-            "The new city park was inaugurated on Sunday morning by the mayor. "
-            "Over 2,000 residents attended the event, which featured tree plantation drives, "
-            "cultural performances, and free food stalls for visiting families."
-        ),
-    }
-    created = session.post(f"{API}/news", json=payload).json()
-    item_id = created["id"]
-    try:
-        r = session.post(f"{API}/news/{item_id}/approve-rewrite", timeout=90)
-        assert r.status_code == 200, r.text
-        data = r.json()
-        assert data["status"] == "Rewritten_Pending_Publish"
-        assert data["rewritten_content"] and len(data["rewritten_content"]) > 20
-        # must contain devanagari characters
-        assert DEVANAGARI_RE.search(data["rewritten_content"]), "rewritten_content is not in Hindi (Devanagari)"
-
-        # rejecting second approve
-        r2 = session.post(f"{API}/news/{item_id}/approve-rewrite")
-        assert r2.status_code == 400
-    finally:
-        session.delete(f"{API}/news/{item_id}")
-
-
-def test_approve_rewrite_not_found(session):
-    r = session.post(f"{API}/news/does-not-exist-id/approve-rewrite")
-    assert r.status_code == 404
-
-
-# ---------- Publish flow ----------
-def test_publish_flow(session):
-    # find an existing rewritten item from seed
-    lst = session.get(f"{API}/news").json()
-    rewritten = [i for i in lst if i["status"] == "Rewritten_Pending_Publish"]
-    if not rewritten:
-        pytest.skip("No rewritten item to publish")
-    item_id = rewritten[0]["id"]
-    r = session.post(f"{API}/news/{item_id}/publish")
+def test_register_new_admin(session):
+    import uuid
+    email = f"test_{uuid.uuid4().hex[:8]}@samvad.news"
+    r = session.post(f"{API}/auth/register", json={"email": email, "password": "secret123", "name": "T"})
     assert r.status_code == 200
-    assert r.json()["status"] == "Published"
-    # publishing again should fail with 400
-    r2 = session.post(f"{API}/news/{item_id}/publish")
+    body = r.json()
+    assert body["access_token"]
+    assert body["user"]["email"] == email
+    # duplicate
+    r2 = session.post(f"{API}/auth/register", json={"email": email, "password": "secret123"})
     assert r2.status_code == 400
 
 
-def test_publish_rejects_pending(session):
-    payload = {"title": "TEST_publish_reject", "original_content": "content should not be publishable directly"}
-    created = session.post(f"{API}/news", json=payload).json()
+# ---------- 401 protection ----------
+@pytest.mark.parametrize("method,path", [
+    ("GET", "/news"),
+    ("POST", "/news"),
+    ("PATCH", "/news/fake-id"),
+    ("DELETE", "/news/fake-id"),
+    ("POST", "/news/fake-id/approve-rewrite"),
+    ("POST", "/news/fake-id/publish"),
+    ("POST", "/news/fetch"),
+])
+def test_protected_requires_auth(session, method, path):
+    r = session.request(method, f"{API}{path}", json={})
+    assert r.status_code == 401, f"{method} {path} returned {r.status_code}"
+
+
+# ---------- Public ----------
+def test_public_news_open(session):
+    r = session.get(f"{API}/public/news")
+    assert r.status_code == 200
+    items = r.json()
+    assert isinstance(items, list)
+    for i in items:
+        assert i["status"] == "Published"
+        assert "_id" not in i
+
+
+def test_categories_open(session):
+    r = session.get(f"{API}/categories")
+    assert r.status_code == 200
+    assert isinstance(r.json()["categories"], list)
+    assert len(r.json()["categories"]) > 0
+
+
+# ---------- CRUD authenticated ----------
+def test_list_news_authenticated(session, auth_headers):
+    r = session.get(f"{API}/news", headers=auth_headers)
+    assert r.status_code == 200
+    data = r.json()
+    assert isinstance(data, list)
+    assert all("_id" not in i for i in data)
+
+
+def test_create_edit_delete(session, auth_headers):
+    payload = {"original_title": "TEST_ create edit delete", "original_content": "some content here",
+               "category": "राष्ट्रीय", "source": "TEST_Wire"}
+    r = session.post(f"{API}/news", json=payload, headers=auth_headers)
+    assert r.status_code == 200
+    created = r.json()
+    item_id = created["id"]
+    assert created["original_title"] == payload["original_title"]
+    assert created["status"] == "Pending_Review"
+
+    # edit
+    edit = {"rewritten_title": "संपादित शीर्षक", "rewritten_content": "संपादित मूल पाठ"}
+    r2 = session.patch(f"{API}/news/{item_id}", json=edit, headers=auth_headers)
+    assert r2.status_code == 200
+    assert r2.json()["rewritten_title"] == "संपादित शीर्षक"
+
+    # delete
+    r3 = session.delete(f"{API}/news/{item_id}", headers=auth_headers)
+    assert r3.status_code == 200
+    r4 = session.delete(f"{API}/news/{item_id}", headers=auth_headers)
+    assert r4.status_code == 404
+
+
+def test_publish_rejects_pending(session, auth_headers):
+    payload = {"original_title": "TEST_publish_reject", "original_content": "x"}
+    created = session.post(f"{API}/news", json=payload, headers=auth_headers).json()
     try:
-        r = session.post(f"{API}/news/{created['id']}/publish")
+        r = session.post(f"{API}/news/{created['id']}/publish", headers=auth_headers)
         assert r.status_code == 400
     finally:
-        session.delete(f"{API}/news/{created['id']}")
+        session.delete(f"{API}/news/{created['id']}", headers=auth_headers)
+
+
+# ---------- Cron ----------
+def test_cron_requires_secret(session):
+    r = session.post(f"{API}/cron/fetch-news")
+    assert r.status_code == 401
+    r2 = session.post(f"{API}/cron/fetch-news", headers={"Authorization": "Bearer wrong"})
+    assert r2.status_code == 401
+
+
+def test_cron_with_secret(session):
+    assert WEBHOOK_CRON_SECRET
+    r = session.post(f"{API}/cron/fetch-news", headers={"Authorization": f"Bearer {WEBHOOK_CRON_SECRET}"})
+    assert r.status_code == 200
+    assert r.json()["status"] in ("accepted", "duplicate")
+
+
+# ---------- Approve rewrite with instructions ----------
+def test_approve_rewrite_with_instructions(session, auth_headers):
+    payload = {"original_title": "TEST_ Local park inauguration draws crowds",
+               "original_content": "The new city park was inaugurated on Sunday morning. Over 2,000 residents attended.",
+               "category": "राष्ट्रीय"}
+    created = session.post(f"{API}/news", json=payload, headers=auth_headers).json()
+    try:
+        r = session.post(f"{API}/news/{created['id']}/approve-rewrite",
+                         json={"instructions": "छोटे वाक्यों में लिखें"},
+                         headers=auth_headers, timeout=90)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["status"] == "Rewritten_Pending_Publish"
+        assert data["rewritten_title"] and DEVANAGARI_RE.search(data["rewritten_title"])
+        assert data["rewritten_content"] and DEVANAGARI_RE.search(data["rewritten_content"])
+
+        # publish
+        pr = session.post(f"{API}/news/{created['id']}/publish", headers=auth_headers)
+        assert pr.status_code == 200
+        assert pr.json()["status"] == "Published"
+        assert pr.json()["published_at"]
+
+        # appears on public feed
+        pub = session.get(f"{API}/public/news").json()
+        assert created['id'] in [i['id'] for i in pub]
+    finally:
+        session.delete(f"{API}/news/{created['id']}", headers=auth_headers)

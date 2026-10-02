@@ -1,0 +1,28 @@
+{
+  "summary": "Phase-2 end-to-end validation (auth, public feed, admin dashboard, AI rewrite with instructions, edit, publish, cron, fetch). 20/20 pytest backend tests passed; all critical frontend flows verified via Playwright against the public URL with authenticated session.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Deprecated FastAPI @app.on_event('startup'/'shutdown'); migrate to lifespan context manager.",
+    "approve-rewrite has no server-side timeout on LLM call; a stuck Gemini call could hold a worker. Wrap with asyncio.wait_for and return 504 on timeout.",
+    "No rate limiting on /auth/login or /auth/register — add basic throttling (fastapi-limiter or similar) to resist brute force. Note: the test_credentials/playbook mentions 5-fail lockout but it isn't implemented.",
+    "/api/news (admin) returns up to 2000 items with no pagination; frontend already carries 125+ pending rows. Add server-side pagination + total count headers.",
+    "RSS fetch runs 19 feeds sequentially in asyncio.to_thread but each parse is blocking network I/O; current implementation is fine for size but add a per-feed timeout to avoid long tail.",
+    "CORS_ORIGINS='*' with allow_credentials=True is contradictory (browsers ignore wildcard with credentials). Set explicit origins or allow_credentials=False.",
+    "No unique index on news title; manual Add News can create duplicates (acceptable for MVP, flag it).",
+    "AdminDashboard.jsx is 468 lines — consider splitting NewsCard / AddNewsModal into own files (>700 is the hard limit but it's getting close)."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "100% (20/20)", "frontend": "100% core flows"},
+  "test_credentials": "admin@samvad.news / admin123 (from /app/memory/test_credentials.md). JWT in localStorage['samvad_token'].",
+  "seed_data_creation": "Backend seeds admin + 4 demo items on startup if empty. Fetch Now had already imported ~128 real headlines. One TEST_ item was created and cleaned up.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend URL: frontend/.env REACT_APP_BACKEND_URL. Admin login works, token in localStorage key 'samvad_token'. Full happy path (login -> approve-rewrite -> edit (PATCH) -> re-rewrite (with instructions) -> publish -> public feed /) all working. Cron with WEBHOOK_CRON_SECRET -> 2xx; without -> 401. Fetch Now dedup by source_url. AI rewrite ~5-20s. In Playwright, remember default admin filter is Pending_Review — switch to Rewritten/ALL before asserting on items whose status just transitioned.",
+  "rca of the issue": "N/A - all Phase 2 features (news source linking via Google News Hindi RSS, Compare & Edit, Public News Page at /, JWT admin login, Fetch Now, cron) are working end-to-end as specified."
+}
