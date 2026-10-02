@@ -17,10 +17,11 @@ from typing import List, Optional
 
 import jwt
 import bcrypt
+import requests
 import feedparser
 import trafilatura
 from googlenewsdecoder import gnewsdecoder
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Header
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Header, Response
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, ConfigDict, EmailStr
@@ -46,6 +47,77 @@ logger = logging.getLogger(__name__)
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# ---------- Object storage (internal image hosting) ----------
+STORAGE_BASE = (os.environ.get("INTEGRATION_PROXY_URL") or "").strip() or "https://integrations.emergentagent.com"
+STORAGE_URL = STORAGE_BASE.rstrip("/") + "/objstore/api/v1/storage"
+APP_NAME = "samvad"
+_storage_key = None
+
+
+def init_storage(force: bool = False):
+    global _storage_key
+    if _storage_key and not force:
+        return _storage_key
+    resp = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_LLM_KEY}, timeout=30)
+    resp.raise_for_status()
+    _storage_key = resp.json()["storage_key"]
+    return _storage_key
+
+
+def put_object(path: str, data: bytes, content_type: str) -> dict:
+    key = init_storage()
+    resp = requests.put(
+        f"{STORAGE_URL}/objects/{path}",
+        headers={"X-Storage-Key": key, "Content-Type": content_type},
+        data=data, timeout=120,
+    )
+    if resp.status_code == 404:
+        key = init_storage(force=True)
+        resp = requests.put(
+            f"{STORAGE_URL}/objects/{path}",
+            headers={"X-Storage-Key": key, "Content-Type": content_type},
+            data=data, timeout=120,
+        )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def get_object(path: str):
+    key = init_storage()
+    resp = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
+    if resp.status_code == 404:
+        key = init_storage(force=True)
+        resp = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
+    resp.raise_for_status()
+    return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
+
+
+_IMG_EXT = {"image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif"}
+
+
+def host_image(ext_url: str):
+    """Download a publisher image and store it in our own object storage. Returns an /api/images path."""
+    if not ext_url or not ext_url.startswith("http"):
+        return None
+    try:
+        r = requests.get(ext_url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        r.raise_for_status()
+        ct = r.headers.get("Content-Type", "image/jpeg").split(";")[0].strip().lower()
+        if not ct.startswith("image/"):
+            return None
+        data = r.content
+        if not data or len(data) > 6_000_000:
+            return None
+        ext = _IMG_EXT.get(ct, "jpg")
+        path = f"{APP_NAME}/news/{uuid.uuid4()}.{ext}"
+        res = put_object(path, data, ct)
+        return "/api/images/" + res["path"]
+    except Exception as e:
+        logger.warning("host_image failed for %s: %s", ext_url[:80], e)
+        return None
+
 
 
 # ---------- Auth helpers ----------
@@ -210,7 +282,9 @@ def _extract_article_data(source_url: str) -> dict:
         text = trafilatura.extract(html_doc, include_comments=False, include_tables=False)
         if text and len(text.strip()) >= 200:
             out["text"] = text.strip()
-        out["image"] = _og_image(html_doc)
+        img = _og_image(html_doc)
+        if img:
+            out["image"] = host_image(img) or img
     except Exception as e:
         logger.warning("article extract failed: %s", e)
     return out
@@ -383,6 +457,66 @@ async def delete_news(item_id: str, user: dict = Depends(get_current_user)):
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="News item not found")
     return {"deleted": True}
+
+
+# ---------- Public image serving (news images are public) ----------
+@api_router.get("/images/{path:path}")
+async def serve_image(path: str):
+    try:
+        data, content_type = await asyncio.to_thread(get_object, path)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Image not found")
+    return Response(content=data, media_type=content_type,
+                    headers={"Cache-Control": "public, max-age=86400"})
+
+
+# ---------- Backfill & Dedupe ----------
+@api_router.post("/news/backfill")
+async def backfill_news(user: dict = Depends(get_current_user)):
+    docs = await db.news_items.find(
+        {"source_url": {"$ne": None}, "$or": [{"full_content": None}, {"image_url": None}]},
+        {"_id": 0, "id": 1},
+    ).to_list(5000)
+    ids = [d["id"] for d in docs]
+    if ids:
+        asyncio.create_task(enrich_items(ids))
+    return {"queued": len(ids)}
+
+
+def _title_tokens(title: str) -> set:
+    t = (title or "").lower()
+    t = re.sub(r"[^a-z0-9\u0900-\u097F ]", " ", t)
+    return {w for w in t.split() if len(w) > 2}
+
+
+@api_router.post("/news/dedupe")
+async def dedupe_news(user: dict = Depends(get_current_user)):
+    docs = await db.news_items.find(
+        {"status": {"$ne": "Published"}},
+        {"_id": 0, "id": 1, "original_title": 1, "full_content": 1, "image_url": 1},
+    ).to_list(5000)
+    items = [(d, _title_tokens(d.get("original_title", ""))) for d in docs]
+    # keep the richest version of each story (has full text / image / longer title)
+    items.sort(key=lambda x: (bool(x[0].get("full_content")), bool(x[0].get("image_url")),
+                              len(x[0].get("original_title", ""))), reverse=True)
+    kept_sets, to_delete = [], []
+    for d, s in items:
+        if len(s) < 3:
+            continue
+        is_dup = False
+        for ks in kept_sets:
+            inter = len(s & ks)
+            union = len(s | ks)
+            if union and inter / union >= 0.6:
+                is_dup = True
+                break
+        if is_dup:
+            to_delete.append(d["id"])
+        else:
+            kept_sets.append(s)
+    if to_delete:
+        await db.news_items.delete_many({"id": {"$in": to_delete}})
+    return {"removed": len(to_delete)}
 
 
 # ---------- RSS Fetch ----------
@@ -641,6 +775,11 @@ async def seed_admin():
 
 @app.on_event("startup")
 async def startup():
+    try:
+        await asyncio.to_thread(init_storage)
+        logger.info("Object storage initialized")
+    except Exception as e:
+        logger.error("Storage init failed: %s", e)
     await db.users.create_index("email", unique=True)
     await db.news_items.create_index("source_url")
     await seed_admin()

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Newspaper, Loader2, Lock, Clock } from "lucide-react";
-import api, { apiError } from "@/lib/api";
+import api, { apiError, imgSrc } from "@/lib/api";
 
 const FALLBACK_IMG =
   "https://images.unsplash.com/photo-1742805382149-3c2f0cd0f300?crop=entropy&cs=srgb&fm=jpg&q=85&w=800";
@@ -95,7 +95,7 @@ export default function PublicFeed() {
             >
               <div className="relative min-h-[260px]">
                 <img
-                  src={lead.image_url || FALLBACK_IMG}
+                  src={imgSrc(lead.image_url) || FALLBACK_IMG}
                   alt=""
                   className="h-full w-full object-cover"
                   onError={(e) => (e.currentTarget.src = FALLBACK_IMG)}
@@ -127,7 +127,7 @@ export default function PublicFeed() {
                 >
                   <div className="relative h-44">
                     <img
-                      src={item.image_url || FALLBACK_IMG}
+                      src={imgSrc(item.image_url) || FALLBACK_IMG}
                       alt=""
                       className="h-full w-full object-cover"
                       onError={(e) => (e.currentTarget.src = FALLBACK_IMG)}

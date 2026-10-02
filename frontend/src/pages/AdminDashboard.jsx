@@ -4,9 +4,9 @@ import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
 import {
   Sparkles, Send, Loader2, Newspaper, Plus, Clock, CheckCircle2,
-  FileText, Radio, Trash2, X, LogOut, DownloadCloud, Save, RefreshCw, Pencil, ImageIcon, ExternalLink, Settings2,
+  FileText, Radio, Trash2, X, LogOut, DownloadCloud, Save, RefreshCw, Pencil, ImageIcon, ExternalLink, Settings2, Layers,
 } from "lucide-react";
-import api, { apiError } from "@/lib/api";
+import api, { apiError, imgSrc } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 
 const STATUS_META = {
@@ -58,7 +58,7 @@ function AdminNewsCard({ item, busy, onRewrite, onReRewrite, onSave, onPublish, 
       className="flex flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#111827] shadow-lg shadow-black/20"
     >
       {item.image_url && (
-        <img src={item.image_url} alt="" className="h-36 w-full object-cover" />
+        <img src={imgSrc(item.image_url)} alt="" className="h-36 w-full object-cover" />
       )}
       <div className="flex flex-1 flex-col p-5">
         <div className="mb-3 flex items-start justify-between gap-3">
@@ -299,10 +299,11 @@ function AddNewsModal({ open, onClose, categories, onCreated }) {
   );
 }
 
-function SchedulerModal({ open, onClose }) {
+function SchedulerModal({ open, onClose, onReload }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [maint, setMaint] = useState(null); // 'backfill' | 'dedupe'
 
   useEffect(() => {
     if (!open) return;
@@ -321,6 +322,23 @@ function SchedulerModal({ open, onClose }) {
     } catch (e) { toast.error(apiError(e)); } finally { setSaving(false); }
   };
 
+  const runBackfill = async () => {
+    setMaint("backfill");
+    try {
+      const { data } = await api.post("/news/backfill");
+      toast.success(`${data.queued} खबरों के लिए फोटो + पूरा टेक्स्ट लाया जा रहा है`, { description: "पृष्ठभूमि में चल रहा है — कुछ मिनटों में अपने आप अपडेट होगा" });
+    } catch (e) { toast.error(apiError(e)); } finally { setMaint(null); }
+  };
+
+  const runDedupe = async () => {
+    setMaint("dedupe");
+    try {
+      const { data } = await api.post("/news/dedupe");
+      toast.success(`${data.removed} डुप्लिकेट खबरें हटाई गईं`);
+      onReload?.();
+    } catch (e) { toast.error(apiError(e)); } finally { setMaint(null); }
+  };
+
   const total = rows.filter((r) => r.enabled).reduce((s, r) => s + Number(r.count || 0), 0);
 
   if (!open) return null;
@@ -333,6 +351,20 @@ function SchedulerModal({ open, onClose }) {
           <button data-testid="close-scheduler-btn" onClick={onClose} className="text-zinc-500 hover:text-zinc-200"><X className="h-5 w-5" /></button>
         </div>
         <p className="mb-4 text-xs text-zinc-500">हर घंटे चलने वाले ऑटो-फेच और “Fetch Now” के लिए श्रेणियाँ, खोज शब्द और कितनी खबरें लानी हैं, यह चुनें। कुल सक्षम: <span className="font-semibold text-rose-300">{total}</span> खबरें/फेच।</p>
+
+        {/* Maintenance */}
+        <div className="mb-4 flex flex-wrap gap-2 rounded-xl border border-white/10 bg-black/20 p-3">
+          <span className="w-full text-[10px] font-bold uppercase tracking-widest text-zinc-500">रखरखाव · Maintenance</span>
+          <button data-testid="backfill-btn" onClick={runBackfill} disabled={maint === "backfill"}
+            className="inline-flex items-center gap-2 rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-xs font-semibold text-sky-300 hover:bg-sky-500/20 disabled:opacity-60">
+            {maint === "backfill" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ImageIcon className="h-3.5 w-3.5" />} Backfill Photos & Text
+          </button>
+          <button data-testid="dedupe-btn" onClick={runDedupe} disabled={maint === "dedupe"}
+            className="inline-flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-300 hover:bg-amber-500/20 disabled:opacity-60">
+            {maint === "dedupe" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Layers className="h-3.5 w-3.5" />} Remove Duplicates
+          </button>
+        </div>
+
         {loading ? (
           <div className="flex items-center justify-center py-16 text-zinc-500"><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading…</div>
         ) : (
@@ -545,7 +577,7 @@ export default function AdminDashboard() {  const { user, logout } = useAuth();
 
       <AddNewsModal open={modalOpen} onClose={() => setModalOpen(false)} categories={categories}
         onCreated={(item) => setItems((p) => [item, ...p])} />
-      <SchedulerModal open={schedulerOpen} onClose={() => setSchedulerOpen(false)} />
+      <SchedulerModal open={schedulerOpen} onClose={() => setSchedulerOpen(false)} onReload={load} />
     </div>
   );
 }

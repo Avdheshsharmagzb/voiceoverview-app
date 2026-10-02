@@ -25,8 +25,13 @@ api.interceptors.response.use(
   }
 );
 
-export function apiError(err) {
-  const detail = err?.response?.data?.detail;
+export function imgSrc(url) {
+  if (!url) return null;
+  if (url.startsWith("http") || url.startsWith("data:")) return url;
+  return `${BACKEND_URL}${url}`;
+}
+
+export function apiError(err) {  const detail = err?.response?.data?.detail;
   if (detail == null) return err?.message || "Something went wrong";
   if (typeof detail === "string") return detail;
   if (Array.isArray(detail))
