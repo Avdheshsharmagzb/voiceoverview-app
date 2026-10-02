@@ -1,0 +1,8 @@
+crons:
+  - name: hourly-news-fetch
+    description: "Fetches latest headlines from news sources into the review queue every hour"
+    cron: "0 * * * *"
+    endpoint: "{{BASE_URL}}/api/cron/fetch-news"
+    method: POST
+    # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
+    enabled: true
