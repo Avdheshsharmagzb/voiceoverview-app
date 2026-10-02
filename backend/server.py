@@ -18,6 +18,8 @@ from typing import List, Optional
 import jwt
 import bcrypt
 import feedparser
+import trafilatura
+from googlenewsdecoder import gnewsdecoder
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Header
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -108,6 +110,7 @@ class NewsItem(BaseModel):
     image_url: Optional[str] = None
     original_title: str
     original_content: str = ""
+    full_content: Optional[str] = None
     rewritten_title: Optional[str] = None
     rewritten_content: Optional[str] = None
     status: str = "Pending_Review"
@@ -165,6 +168,38 @@ def _parse_rewrite(raw: str) -> dict:
     if lines:
         return {"headline": lines[0].strip(), "body": "\n\n".join(lines[1:]).strip() or lines[0].strip()}
     return {"headline": "समाचार", "body": text}
+
+
+def _extract_full_article(source_url: str) -> Optional[str]:
+    """Resolve a Google News link to the real publisher and extract the full article text."""
+    if not source_url:
+        return None
+    real_url = source_url
+    try:
+        if "news.google.com" in source_url:
+            res = gnewsdecoder(source_url, interval=1)
+            if isinstance(res, dict) and res.get("decoded_url"):
+                real_url = res["decoded_url"]
+    except Exception as e:
+        logger.warning("gnews decode failed: %s", e)
+    try:
+        html = trafilatura.fetch_url(real_url)
+        if not html:
+            return None
+        text = trafilatura.extract(html, include_comments=False, include_tables=False)
+        if text and len(text.strip()) >= 200:
+            return text.strip()
+    except Exception as e:
+        logger.warning("article extract failed: %s", e)
+    return None
+
+
+async def fetch_full_article(source_url: str) -> Optional[str]:
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(_extract_full_article, source_url), timeout=25)
+    except Exception as e:
+        logger.warning("full article fetch timeout/err: %s", e)
+        return None
 
 
 async def rewrite_to_hindi(title: str, content: str, instructions: Optional[str] = None) -> dict:
@@ -259,8 +294,15 @@ async def approve_rewrite(item_id: str, payload: RewriteInput = RewriteInput(), 
     item = NewsItem(**doc)
     if item.status not in ("Pending_Review", "Rewritten_Pending_Publish"):
         raise HTTPException(status_code=400, detail="Cannot rewrite a published item")
+    # Pull the full article body from the source link (once) so the AI rewrites the whole story.
+    if not item.full_content and item.source_url:
+        full = await fetch_full_article(item.source_url)
+        if full:
+            item.full_content = full
+            await db.news_items.update_one({"id": item_id}, {"$set": {"full_content": full}})
+    source_text = item.full_content or item.original_content
     try:
-        result = await rewrite_to_hindi(item.original_title, item.original_content, payload.instructions)
+        result = await rewrite_to_hindi(item.original_title, source_text, payload.instructions)
     except Exception as e:
         logger.exception("AI rewrite failed")
         raise HTTPException(status_code=502, detail=f"AI rewrite failed: {e}")

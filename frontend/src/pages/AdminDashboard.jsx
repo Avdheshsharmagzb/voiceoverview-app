@@ -70,8 +70,13 @@ function AdminNewsCard({ item, busy, onRewrite, onReRewrite, onSave, onPublish, 
 
         <h3 className="font-display text-sm font-semibold leading-snug text-zinc-300">{item.original_title}</h3>
         <p data-testid={`original-content-pane-${item.id}`} className="mt-2 text-xs leading-relaxed text-zinc-500 line-clamp-3">
-          {item.original_content}
+          {item.full_content || item.original_content}
         </p>
+        {item.full_content && (
+          <span className="mt-1.5 inline-flex w-fit items-center gap-1 rounded-full bg-sky-500/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-sky-300">
+            <FileText className="h-2.5 w-2.5" /> पूरी खबर प्राप्त
+          </span>
+        )}
 
         {/* Rewritten / editable area */}
         {(isRewritten || isPublished) && (
