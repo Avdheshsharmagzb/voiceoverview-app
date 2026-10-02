@@ -34,17 +34,19 @@ Pending_Review → (Approve for Rewrite / AI) → Rewritten_Pending_Publish → 
 - 2026-10-02 (Phase 2): News source linking (Google News Hindi RSS, 19 categories), Fetch Now + hourly cron,
   Compare & Edit (editable Hindi + re-rewrite with suggestions), Public feed at /, JWT admin login
 - 2026-10-02 (Phase 3a): Full-article extraction at rewrite time (gnewsdecoder + trafilatura)
-- 2026-10-02 (Phase 3b):
-  - Image Library: auto-attach publisher og:image to each story (image_url)
-  - Prefetch On Import: background enrichment fetches full text + image for freshly imported drafts
-  - Fetch Scheduler UI: admin-configurable categories/query/count/enabled, persisted in db.settings (/api/fetch-config)
-  - Source Link Display: "मूल स्रोत देखें" link (resolved publisher URL) on each admin card
-  - Tested: backend 24/24, frontend 100%
+- 2026-10-02 (Phase 3b): Image Library (og:image), Prefetch On Import (background enrichment),
+  Fetch Scheduler UI (/api/fetch-config), Source Link Display
+- 2026-10-02 (Phase 3c):
+  - Image Hosting: publisher photos downloaded + stored in Emergent object storage; served via public
+    GET /api/images/{path} (prefix-restricted); image_url = /api/images/samvad/news/{uuid}.ext
+  - Backfill: POST /api/news/backfill enriches all existing items missing text/image (bg, single-flight guard)
+  - Smart Dedupe: POST /api/news/dedupe removes near-duplicate non-published items (title Jaccard >=0.6)
+  - Backfill + Dedupe buttons in the Fetch Scheduler modal; frontend imgSrc() resolves hosted paths
+  - Tested: backend 31/31, frontend 100%
 
 ## Notes / Known limitations
-- Manual photo upload stored as base64 data URL in Mongo (MVP). Fetched images use the publisher's hotlinked URL.
-- Existing pre-Phase-3 Published rows show a fallback image (no image_url); self-heals for new items.
-- Source link falls back to the Google News redirect URL until resolved_url is populated (still opens publisher in-browser).
+- Manual Add-News photo uploads still stored as base64 data URLs inline (fetched images are hosted in object storage).
+- Object storage has no delete API (soft-delete pattern); orphaned images from dedupe/delete are not purged.
 - Admin registration is open (any visitor can create an admin account).
 
 ## Backlog

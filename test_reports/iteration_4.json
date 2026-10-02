@@ -1,0 +1,33 @@
+{
+  "summary": "Phase-4 testing of Image Hosting, Backfill, and Smart Dedupe. 31/31 backend pytest tests pass (added 7 new). Playwright validated the Fetch Scheduler Maintenance section: backfill-btn and dedupe-btn both return 200 with toast; hosted /api/images/* URLs render correctly on admin cards (20/20) and public feed (2/3 - rest is fallback). Published rows are preserved by dedupe.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "backfill_news fires asyncio.create_task(enrich_items(ids)) without bounds; invoking the button repeatedly or from multiple admins can stack 100+ concurrent enrichments. Consider a module-level lock / in-flight flag.",
+    "dedupe_news uses Jaccard>=0.6 on title tokens; purely-Devanagari titles with <3 tokens are skipped (len(s) < 3 check uses word count, not characters) — ok but worth a comment.",
+    "serve_image sets Cache-Control: public, max-age=86400 but there is no ETag/Last-Modified; CDN re-validation will be weak.",
+    "GET /api/images/{path:path} does not restrict path; path traversal is naturally bounded by object storage SDK but add a regex/whitelist on allowed prefixes (e.g., must start with 'samvad/news/').",
+    "host_image failures are silently swallowed (returns None) — add metric/log counter so backfill success rate is observable.",
+    "AdminDashboard.jsx still 584 lines; SchedulerModal (with Maintenance), AddNewsModal, NewsCard should live in separate files.",
+    "Still open from prior iterations: CORS_ORIGINS='*' with allow_credentials; no rate limiting on auth; no index on news_items.source_url."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (added 7 tests: backfill/dedupe auth, backfill queued, dedupe preserves published, hosted image public fetch, 404 for missing image, approve-rewrite hosts image internally)"
+  ],
+  "success_rate": {"backend": "100% (31/31)", "frontend": "100% new flows"},
+  "test_credentials": "admin@samvad.news / admin123",
+  "seed_data_creation": "None. test_backfill_returns_queued triggers background enrichment (idempotent). test_dedupe may remove near-duplicates but preserves Published.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backfill/dedupe buttons live inside scheduler modal (data-testid=backfill-btn, dedupe-btn). Scheduler modal does NOT auto-close after backfill/dedupe (only on save-scheduler-btn). imgSrc() prepends REACT_APP_BACKEND_URL to '/api/images/...' paths. Hosted image example path pattern: /api/images/samvad/news/<uuid>.{webp|jpg|png}. Public image endpoint has no auth. Approve-rewrite does on-demand enrichment incl. host_image on og:image.",
+  "rca of the issue": "N/A — all 3 new features verified end-to-end. Hosted images load with correct natural dimensions (1600x900/1200x675) proving image/* content-type and binary integrity."
+}

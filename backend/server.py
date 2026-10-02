@@ -462,6 +462,8 @@ async def delete_news(item_id: str, user: dict = Depends(get_current_user)):
 # ---------- Public image serving (news images are public) ----------
 @api_router.get("/images/{path:path}")
 async def serve_image(path: str):
+    if not path.startswith(f"{APP_NAME}/") or ".." in path:
+        raise HTTPException(status_code=404, detail="Image not found")
     try:
         data, content_type = await asyncio.to_thread(get_object, path)
     except Exception:
@@ -471,15 +473,30 @@ async def serve_image(path: str):
 
 
 # ---------- Backfill & Dedupe ----------
+_backfill_running = False
+
+
 @api_router.post("/news/backfill")
 async def backfill_news(user: dict = Depends(get_current_user)):
+    global _backfill_running
+    if _backfill_running:
+        return {"queued": 0, "status": "already_running"}
     docs = await db.news_items.find(
         {"source_url": {"$ne": None}, "$or": [{"full_content": None}, {"image_url": None}]},
         {"_id": 0, "id": 1},
     ).to_list(5000)
     ids = [d["id"] for d in docs]
+
+    async def _job():
+        global _backfill_running
+        _backfill_running = True
+        try:
+            await enrich_items(ids)
+        finally:
+            _backfill_running = False
+
     if ids:
-        asyncio.create_task(enrich_items(ids))
+        asyncio.create_task(_job())
     return {"queued": len(ids)}
 
 

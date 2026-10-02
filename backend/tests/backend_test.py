@@ -265,3 +265,89 @@ def test_approve_rewrite_enriches_pending_with_source_url(session, auth_headers)
     assert data["rewritten_title"] and DEVANAGARI_RE.search(data["rewritten_title"])
     enriched_any = bool(data.get("full_content")) or bool(data.get("image_url")) or bool(data.get("resolved_url"))
     assert enriched_any, "Expected enrichment (full_content/image_url/resolved_url) to populate"
+
+
+
+# ---------- Image hosting / Backfill / Dedupe (Phase 4) ----------
+def test_backfill_requires_auth(session):
+    r = session.post(f"{API}/news/backfill")
+    assert r.status_code == 401
+
+
+def test_dedupe_requires_auth(session):
+    r = session.post(f"{API}/news/dedupe")
+    assert r.status_code == 401
+
+
+def test_backfill_returns_queued(session, auth_headers):
+    r = session.post(f"{API}/news/backfill", headers=auth_headers, timeout=30)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert "queued" in data
+    assert isinstance(data["queued"], int)
+    assert data["queued"] >= 0
+
+
+def test_dedupe_removes_near_duplicates_and_preserves_published(session, auth_headers):
+    # Snapshot published ids before
+    before = session.get(f"{API}/news", headers=auth_headers).json()
+    pub_ids_before = {i["id"] for i in before if i.get("status") == "Published"}
+    r = session.post(f"{API}/news/dedupe", headers=auth_headers, timeout=60)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert "removed" in data
+    assert isinstance(data["removed"], int)
+    assert data["removed"] >= 0
+    # verify no published rows were deleted
+    after = session.get(f"{API}/news", headers=auth_headers).json()
+    pub_ids_after = {i["id"] for i in after if i.get("status") == "Published"}
+    assert pub_ids_before.issubset(pub_ids_after), "Published items were deleted by dedupe"
+
+
+def test_hosted_image_served_publicly(session, auth_headers):
+    """Find any item whose image_url is a hosted /api/images/ path and fetch it publicly."""
+    items = session.get(f"{API}/news", headers=auth_headers).json()
+    hosted = [i for i in items if (i.get("image_url") or "").startswith("/api/images/")]
+    if not hosted:
+        # try a public feed as well
+        pub = session.get(f"{API}/public/news").json()
+        hosted = [i for i in pub if (i.get("image_url") or "").startswith("/api/images/")]
+    if not hosted:
+        pytest.skip("No hosted /api/images/ URL available yet")
+    url = BASE_URL + hosted[0]["image_url"]
+    # no auth
+    fresh = requests.Session()
+    r = fresh.get(url, timeout=30)
+    assert r.status_code == 200, f"{url} -> {r.status_code}"
+    assert r.headers.get("content-type", "").startswith("image/"), r.headers.get("content-type")
+    assert len(r.content) > 100
+
+
+def test_images_404_for_missing(session):
+    r = session.get(f"{API}/images/does-not-exist/foo.webp", timeout=30)
+    assert r.status_code == 404
+
+
+def test_approve_rewrite_hosts_image_internally(session, auth_headers):
+    """Approve-rewrite on a Pending_Review with source_url should populate image_url starting with /api/images/."""
+    items = session.get(f"{API}/news", headers=auth_headers).json()
+    candidate = next(
+        (i for i in items if i.get("status") == "Pending_Review" and i.get("source_url")),
+        None,
+    )
+    if not candidate:
+        pytest.skip("No eligible Pending_Review with source_url")
+    rid = candidate["id"]
+    r = session.post(f"{API}/news/{rid}/approve-rewrite", headers=auth_headers, timeout=180)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["status"] == "Rewritten_Pending_Publish"
+    # Image may be absent if og:image fetch failed; but when present must be hosted
+    if data.get("image_url"):
+        assert data["image_url"].startswith("/api/images/"), f"non-hosted image_url: {data['image_url']}"
+        # verify fetchable
+        img = requests.get(BASE_URL + data["image_url"], timeout=30)
+        assert img.status_code == 200
+        assert img.headers.get("content-type", "").startswith("image/")
+    # resolved_url and/or full_content should also typically be set
+    assert data.get("full_content") or data.get("resolved_url"), "Expected enrichment to set full_content or resolved_url"
