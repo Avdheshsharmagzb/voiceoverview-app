@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
 import {
   Sparkles, Send, Loader2, Newspaper, Plus, Clock, CheckCircle2,
-  FileText, Radio, Trash2, X, LogOut, DownloadCloud, Save, RefreshCw, Pencil, ImageIcon,
+  FileText, Radio, Trash2, X, LogOut, DownloadCloud, Save, RefreshCw, Pencil, ImageIcon, ExternalLink, Settings2,
 } from "lucide-react";
 import api, { apiError } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
@@ -192,6 +192,18 @@ function AdminNewsCard({ item, busy, onRewrite, onReRewrite, onSave, onPublish, 
             <Trash2 className="h-3.5 w-3.5" />
           </button>
         </div>
+
+        {(item.resolved_url || item.source_url) && (
+          <a
+            data-testid={`source-link-${item.id}`}
+            href={item.resolved_url || item.source_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-3 inline-flex w-fit items-center gap-1.5 text-[11px] font-medium text-sky-400 hover:text-sky-300 hover:underline"
+          >
+            <ExternalLink className="h-3 w-3" /> मूल स्रोत देखें
+          </a>
+        )}
       </div>
     </motion.div>
   );
@@ -287,8 +299,70 @@ function AddNewsModal({ open, onClose, categories, onCreated }) {
   );
 }
 
-export default function AdminDashboard() {
-  const { user, logout } = useAuth();
+function SchedulerModal({ open, onClose }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    setLoading(true);
+    api.get("/fetch-config").then((r) => setRows(r.data.config)).catch((e) => toast.error(apiError(e))).finally(() => setLoading(false));
+  }, [open]);
+
+  const update = (i, key, val) => setRows((p) => p.map((r, idx) => (idx === i ? { ...r, [key]: val } : r)));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api.put("/fetch-config", { config: rows });
+      toast.success("फेच शेड्यूल सहेजा गया");
+      onClose();
+    } catch (e) { toast.error(apiError(e)); } finally { setSaving(false); }
+  };
+
+  const total = rows.filter((r) => r.enabled).reduce((s, r) => s + Number(r.count || 0), 0);
+
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+      <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }}
+        className="flex max-h-[88vh] w-full max-w-2xl flex-col rounded-2xl border border-white/10 bg-[#111827] p-6">
+        <div className="mb-1 flex items-center justify-between">
+          <h2 className="font-display text-lg font-bold text-zinc-100">Fetch Scheduler</h2>
+          <button data-testid="close-scheduler-btn" onClick={onClose} className="text-zinc-500 hover:text-zinc-200"><X className="h-5 w-5" /></button>
+        </div>
+        <p className="mb-4 text-xs text-zinc-500">हर घंटे चलने वाले ऑटो-फेच और “Fetch Now” के लिए श्रेणियाँ, खोज शब्द और कितनी खबरें लानी हैं, यह चुनें। कुल सक्षम: <span className="font-semibold text-rose-300">{total}</span> खबरें/फेच।</p>
+        {loading ? (
+          <div className="flex items-center justify-center py-16 text-zinc-500"><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading…</div>
+        ) : (
+          <div className="flex-1 space-y-2 overflow-y-auto pr-1">
+            {rows.map((r, i) => (
+              <div key={i} data-testid={`scheduler-row-${i}`} className="grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-xl border border-white/10 bg-black/20 p-3">
+                <input type="checkbox" data-testid={`scheduler-enabled-${i}`} checked={!!r.enabled} onChange={(e) => update(i, "enabled", e.target.checked)}
+                  className="h-4 w-4 accent-rose-600" />
+                <div className="min-w-0">
+                  <p className="truncate font-hindi text-sm font-semibold text-zinc-200">{r.category}</p>
+                  <input value={r.query} onChange={(e) => update(i, "query", e.target.value)}
+                    className="font-hindi mt-1 w-full rounded-md border border-white/10 bg-black/30 px-2 py-1 text-xs text-zinc-400 outline-none focus:border-rose-500/50" />
+                </div>
+                <input type="number" min="0" max="50" data-testid={`scheduler-count-${i}`} value={r.count}
+                  onChange={(e) => update(i, "count", Number(e.target.value))}
+                  className="w-16 rounded-lg border border-white/10 bg-black/30 px-2 py-2 text-center text-sm text-zinc-100 outline-none focus:border-rose-500/50" />
+              </div>
+            ))}
+          </div>
+        )}
+        <button data-testid="save-scheduler-btn" onClick={save} disabled={saving}
+          className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-rose-600 px-4 py-3 text-sm font-semibold text-white transition-all hover:bg-rose-500 disabled:opacity-70">
+          {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Save Schedule
+        </button>
+      </motion.div>
+    </div>
+  );
+}
+
+export default function AdminDashboard() {  const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [items, setItems] = useState([]);
   const [categories, setCategories] = useState([]);
@@ -297,6 +371,7 @@ export default function AdminDashboard() {
   const [catFilter, setCatFilter] = useState("ALL");
   const [busy, setBusy] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
+  const [schedulerOpen, setSchedulerOpen] = useState(false);
   const [fetching, setFetching] = useState(false);
   const [limit, setLimit] = useState(48);
 
@@ -367,7 +442,6 @@ export default function AdminDashboard() {
       await load();
     } catch (e) { toast.error(apiError(e)); } finally { setFetching(false); }
   };
-
   const doLogout = () => { logout(); navigate("/login"); };
 
   const counts = useMemo(() => items.reduce((a, i) => { a[i.status] = (a[i.status] || 0) + 1; return a; }, {}), [items]);
@@ -395,6 +469,10 @@ export default function AdminDashboard() {
             <button data-testid="fetch-news-btn" onClick={handleFetch} disabled={fetching}
               className="inline-flex items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2.5 text-sm font-semibold text-rose-300 transition-all hover:bg-rose-500/20 disabled:opacity-70">
               {fetching ? <Loader2 className="h-4 w-4 animate-spin" /> : <DownloadCloud className="h-4 w-4" />} Fetch Now
+            </button>
+            <button data-testid="scheduler-btn" onClick={() => setSchedulerOpen(true)}
+              className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm font-semibold text-zinc-100 transition-all hover:bg-white/10">
+              <Settings2 className="h-4 w-4" />
             </button>
             <button data-testid="add-news-btn" onClick={() => setModalOpen(true)}
               className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-semibold text-zinc-100 transition-all hover:bg-white/10">
@@ -467,6 +545,7 @@ export default function AdminDashboard() {
 
       <AddNewsModal open={modalOpen} onClose={() => setModalOpen(false)} categories={categories}
         onCreated={(item) => setItems((p) => [item, ...p])} />
+      <SchedulerModal open={schedulerOpen} onClose={() => setSchedulerOpen(false)} />
     </div>
   );
 }

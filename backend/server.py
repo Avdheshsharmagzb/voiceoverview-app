@@ -107,6 +107,7 @@ class NewsItem(BaseModel):
     category: str = "सामान्य"
     source: str = "Manual Entry"
     source_url: Optional[str] = None
+    resolved_url: Optional[str] = None
     image_url: Optional[str] = None
     original_title: str
     original_content: str = ""
@@ -170,10 +171,29 @@ def _parse_rewrite(raw: str) -> dict:
     return {"headline": "समाचार", "body": text}
 
 
-def _extract_full_article(source_url: str) -> Optional[str]:
-    """Resolve a Google News link to the real publisher and extract the full article text."""
+def _og_image(html: str) -> Optional[str]:
+    for pat in (
+        r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)',
+        r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image',
+        r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']+)',
+    ):
+        m = re.search(pat, html, re.I)
+        if m:
+            url = html_unescape_url(m.group(1))
+            if url.startswith("http"):
+                return url
+    return None
+
+
+def html_unescape_url(u: str) -> str:
+    return html.unescape(u).strip()
+
+
+def _extract_article_data(source_url: str) -> dict:
+    """Resolve a Google News link to the real publisher and extract full text + lead image."""
+    out = {"text": None, "image": None, "url": source_url}
     if not source_url:
-        return None
+        return out
     real_url = source_url
     try:
         if "news.google.com" in source_url:
@@ -182,24 +202,26 @@ def _extract_full_article(source_url: str) -> Optional[str]:
                 real_url = res["decoded_url"]
     except Exception as e:
         logger.warning("gnews decode failed: %s", e)
+    out["url"] = real_url
     try:
-        html = trafilatura.fetch_url(real_url)
-        if not html:
-            return None
-        text = trafilatura.extract(html, include_comments=False, include_tables=False)
+        html_doc = trafilatura.fetch_url(real_url)
+        if not html_doc:
+            return out
+        text = trafilatura.extract(html_doc, include_comments=False, include_tables=False)
         if text and len(text.strip()) >= 200:
-            return text.strip()
+            out["text"] = text.strip()
+        out["image"] = _og_image(html_doc)
     except Exception as e:
         logger.warning("article extract failed: %s", e)
-    return None
+    return out
 
 
-async def fetch_full_article(source_url: str) -> Optional[str]:
+async def fetch_article_data(source_url: str) -> dict:
     try:
-        return await asyncio.wait_for(asyncio.to_thread(_extract_full_article, source_url), timeout=25)
+        return await asyncio.wait_for(asyncio.to_thread(_extract_article_data, source_url), timeout=25)
     except Exception as e:
-        logger.warning("full article fetch timeout/err: %s", e)
-        return None
+        logger.warning("article fetch timeout/err: %s", e)
+        return {"text": None, "image": None, "url": source_url}
 
 
 async def rewrite_to_hindi(title: str, content: str, instructions: Optional[str] = None) -> dict:
@@ -294,12 +316,18 @@ async def approve_rewrite(item_id: str, payload: RewriteInput = RewriteInput(), 
     item = NewsItem(**doc)
     if item.status not in ("Pending_Review", "Rewritten_Pending_Publish"):
         raise HTTPException(status_code=400, detail="Cannot rewrite a published item")
-    # Pull the full article body from the source link (once) so the AI rewrites the whole story.
-    if not item.full_content and item.source_url:
-        full = await fetch_full_article(item.source_url)
-        if full:
-            item.full_content = full
-            await db.news_items.update_one({"id": item_id}, {"$set": {"full_content": full}})
+    # Pull the full article body + lead image from the source link (once).
+    if item.source_url and (not item.full_content or not item.image_url):
+        data = await fetch_article_data(item.source_url)
+        patch = {}
+        if data.get("text") and not item.full_content:
+            item.full_content = data["text"]; patch["full_content"] = data["text"]
+        if data.get("image") and not item.image_url:
+            item.image_url = data["image"]; patch["image_url"] = data["image"]
+        if data.get("url") and not item.resolved_url:
+            item.resolved_url = data["url"]; patch["resolved_url"] = data["url"]
+        if patch:
+            await db.news_items.update_one({"id": item_id}, {"$set": patch})
     source_text = item.full_content or item.original_content
     try:
         result = await rewrite_to_hindi(item.original_title, source_text, payload.instructions)
@@ -420,11 +448,28 @@ def _fetch_one_feed(category: str, query: str, limit: int) -> list:
     return out
 
 
+DEFAULT_FETCH_CONFIG = [
+    {"category": c, "query": q, "count": n, "enabled": True} for c, q, n in CATEGORY_FEEDS
+]
+
+
+async def get_fetch_config() -> list:
+    doc = await db.settings.find_one({"key": "fetch_config"}, {"_id": 0})
+    if doc and doc.get("value"):
+        return doc["value"]
+    await db.settings.update_one(
+        {"key": "fetch_config"}, {"$set": {"value": DEFAULT_FETCH_CONFIG}}, upsert=True
+    )
+    return DEFAULT_FETCH_CONFIG
+
+
 async def run_fetch() -> int:
+    config = await get_fetch_config()
+    active = [c for c in config if c.get("enabled", True)]
     results = await asyncio.gather(*[
-        asyncio.to_thread(_fetch_one_feed, cat, q, n) for cat, q, n in CATEGORY_FEEDS
+        asyncio.to_thread(_fetch_one_feed, c["category"], c["query"], int(c.get("count", 4))) for c in active
     ])
-    inserted = 0
+    inserted, new_ids = 0, []
     for group in results:
         for cand in group:
             if cand.get("source_url"):
@@ -433,14 +478,68 @@ async def run_fetch() -> int:
                     continue
             item = NewsItem(**cand)
             await db.news_items.insert_one(item.model_dump())
+            new_ids.append(item.id)
             inserted += 1
     logger.info("RSS fetch inserted %d new drafts", inserted)
+    if new_ids:
+        asyncio.create_task(enrich_items(new_ids))
     return inserted
+
+
+async def _enrich_one(item_id: str, sem: asyncio.Semaphore):
+    async with sem:
+        doc = await db.news_items.find_one({"id": item_id}, {"_id": 0})
+        if not doc or not doc.get("source_url"):
+            return
+        if doc.get("full_content") and doc.get("image_url"):
+            return
+        data = await fetch_article_data(doc["source_url"])
+        patch = {}
+        if data.get("text") and not doc.get("full_content"):
+            patch["full_content"] = data["text"]
+        if data.get("image") and not doc.get("image_url"):
+            patch["image_url"] = data["image"]
+        if data.get("url") and not doc.get("resolved_url"):
+            patch["resolved_url"] = data["url"]
+        if patch:
+            await db.news_items.update_one({"id": item_id}, {"$set": patch})
+
+
+async def enrich_items(item_ids: list):
+    """Prefetch full text + lead image for freshly imported drafts, in the background."""
+    sem = asyncio.Semaphore(5)
+    await asyncio.gather(*[_enrich_one(i, sem) for i in item_ids], return_exceptions=True)
+    logger.info("Enrichment finished for %d items", len(item_ids))
 
 
 @api_router.get("/categories")
 async def get_categories():
     return {"categories": CATEGORIES}
+
+
+@api_router.get("/fetch-config")
+async def read_fetch_config(user: dict = Depends(get_current_user)):
+    return {"config": await get_fetch_config()}
+
+
+class FetchConfigUpdate(BaseModel):
+    config: List[dict]
+
+
+@api_router.put("/fetch-config")
+async def update_fetch_config(payload: FetchConfigUpdate, user: dict = Depends(get_current_user)):
+    cleaned = []
+    for c in payload.config:
+        if not c.get("category") or not c.get("query"):
+            continue
+        cleaned.append({
+            "category": str(c["category"]),
+            "query": str(c["query"]),
+            "count": max(0, min(50, int(c.get("count", 4)))),
+            "enabled": bool(c.get("enabled", True)),
+        })
+    await db.settings.update_one({"key": "fetch_config"}, {"$set": {"value": cleaned}}, upsert=True)
+    return {"config": cleaned}
 
 
 @api_router.post("/news/fetch")
