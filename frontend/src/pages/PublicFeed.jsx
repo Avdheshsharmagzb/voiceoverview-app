@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Newspaper, Loader2, Lock, Clock } from "lucide-react";
+import { Newspaper, Loader2, Lock, Clock, Play } from "lucide-react";
 import api, { apiError, imgSrc } from "@/lib/api";
 
 const FALLBACK_IMG =
@@ -94,12 +94,17 @@ export default function PublicFeed() {
               className="mb-10 grid gap-6 overflow-hidden rounded-3xl border border-white/10 bg-[#111827] md:grid-cols-2"
             >
               <div className="relative min-h-[260px]">
-                <img
-                  src={imgSrc(lead.image_url) || FALLBACK_IMG}
-                  alt=""
-                  className="h-full w-full object-cover"
-                  onError={(e) => (e.currentTarget.src = FALLBACK_IMG)}
-                />
+                {lead.video_url ? (
+                  <video data-testid={`public-video-${lead.id}`} src={imgSrc(lead.video_url)} poster={imgSrc(lead.video_image_url || lead.image_url) || FALLBACK_IMG}
+                    controls className="h-full w-full bg-black object-cover" />
+                ) : (
+                  <img
+                    src={imgSrc(lead.image_url) || FALLBACK_IMG}
+                    alt=""
+                    className="h-full w-full object-cover"
+                    onError={(e) => (e.currentTarget.src = FALLBACK_IMG)}
+                  />
+                )}
                 <span className="absolute left-4 top-4 rounded-full bg-rose-600 px-3 py-1 text-xs font-bold text-white">
                   {lead.category}
                 </span>
@@ -135,6 +140,11 @@ export default function PublicFeed() {
                     <span className="absolute left-3 top-3 rounded-full bg-black/60 px-2.5 py-1 text-[11px] font-semibold text-rose-300 backdrop-blur">
                       {item.category}
                     </span>
+                    {item.video_url && (
+                      <span className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full bg-fuchsia-600/90 px-2.5 py-1 text-[11px] font-semibold text-white">
+                        <Play className="h-3 w-3" /> वीडियो
+                      </span>
+                    )}
                   </div>
                   <div className="flex flex-1 flex-col p-5">
                     <h2 className="font-hindi-display text-lg leading-snug text-zinc-100">

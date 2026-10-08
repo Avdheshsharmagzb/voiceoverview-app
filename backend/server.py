@@ -6,12 +6,15 @@ load_dotenv(ROOT_DIR / '.env')
 
 import os
 import re
+import io
 import html
 import json
 import uuid
 import hmac
 import asyncio
 import logging
+import tempfile
+import subprocess
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
@@ -20,6 +23,8 @@ import bcrypt
 import requests
 import feedparser
 import trafilatura
+import imageio_ffmpeg
+from PIL import Image
 from googlenewsdecoder import gnewsdecoder
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Header, Response, UploadFile, File
 from starlette.middleware.cors import CORSMiddleware
@@ -209,6 +214,9 @@ class NewsItem(BaseModel):
     rewritten_title: Optional[str] = None
     rewritten_content: Optional[str] = None
     status: str = "Pending_Review"
+    video_url: Optional[str] = None
+    video_image_url: Optional[str] = None
+    video_approved_at: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
     published_at: Optional[str] = None
@@ -596,6 +604,211 @@ async def dedupe_news(user: dict = Depends(get_current_user)):
     if to_delete:
         await db.news_items.delete_many({"id": {"$in": to_delete}})
     return {"removed": len(to_delete)}
+
+
+# ---------- AI Video generation (RunPod-orchestrated; MOCKED until pod endpoint is wired) ----------
+RUNPOD_API_KEY = os.environ.get("RUNPOD_API_KEY", "")
+RUNPOD_POD_ID = os.environ.get("RUNPOD_POD_ID", "")
+RUNPOD_INFERENCE_URL = os.environ.get("RUNPOD_INFERENCE_URL", "")
+
+
+def _runpod_ready() -> bool:
+    return bool(RUNPOD_API_KEY and RUNPOD_POD_ID
+                and not RUNPOD_API_KEY.startswith("REPLACE_WITH")
+                and not RUNPOD_POD_ID.startswith("REPLACE_WITH"))
+
+
+def runpod_power(action: str):
+    """Auto start/stop the RunPod GPU. No-op (logged) until real credentials are set."""
+    if not _runpod_ready():
+        logger.info("[RunPod MOCK] %s GPU pod (no real credentials configured)", action)
+        return
+    try:
+        url = f"https://rest.runpod.io/v1/pods/{RUNPOD_POD_ID}/{action}"
+        r = requests.post(url, headers={"Authorization": f"Bearer {RUNPOD_API_KEY}"}, timeout=30)
+        logger.info("[RunPod] %s -> %s", action, r.status_code)
+    except Exception as e:
+        logger.warning("[RunPod] %s failed: %s", action, e)
+
+
+class VideoJob(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    news_id: str
+    status: str = "queued"  # queued|processing|ready_for_approval|approved|rejected|failed
+    script_text: str = ""
+    voice_model: str = "placeholder-voice"
+    video_url: Optional[str] = None
+    watermarked_image_url: Optional[str] = None
+    mocked: bool = True
+    error: Optional[str] = None
+    created_at: str = Field(default_factory=now_iso)
+    updated_at: str = Field(default_factory=now_iso)
+    approved_at: Optional[str] = None
+
+
+async def get_watermark_logo() -> Optional[Image.Image]:
+    doc = await db.settings.find_one({"key": "watermark"}, {"_id": 0})
+    path = (doc or {}).get("value", {}).get("logo_path")
+    if not path:
+        return None
+    try:
+        data, _ = await asyncio.to_thread(get_object, path)
+        return Image.open(io.BytesIO(data))
+    except Exception:
+        return None
+
+
+def _load_image_sync(image_url: str) -> Optional[Image.Image]:
+    try:
+        if not image_url:
+            return None
+        if image_url.startswith("/api/images/"):
+            path = image_url[len("/api/images/"):]
+            data, _ = get_object(path)
+            return Image.open(io.BytesIO(data))
+        if image_url.startswith("data:"):
+            import base64
+            b64 = image_url.split(",", 1)[1]
+            return Image.open(io.BytesIO(base64.b64decode(b64)))
+        if image_url.startswith("http"):
+            r = requests.get(image_url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+            r.raise_for_status()
+            return Image.open(io.BytesIO(r.content))
+    except Exception as e:
+        logger.warning("load image failed: %s", e)
+    return None
+
+
+def _compose_watermarked(base: Optional[Image.Image], logo: Optional[Image.Image]) -> bytes:
+    if base is None:
+        base = Image.new("RGB", (1280, 720), (11, 15, 23))
+    base = base.convert("RGB")
+    target_w = 1280
+    if base.width != target_w:
+        h = max(1, int(base.height * target_w / base.width))
+        base = base.resize((target_w, h))
+    if logo is not None:
+        logo = logo.convert("RGBA")
+        lw = int(base.width * 0.18)
+        lh = max(1, int(logo.height * lw / logo.width))
+        logo = logo.resize((lw, lh))
+        alpha = logo.split()[3].point(lambda p: int(p * 0.9))
+        logo.putalpha(alpha)
+        pad = int(base.width * 0.03)
+        base.paste(logo, (base.width - lw - pad, base.height - lh - pad), logo)
+    buf = io.BytesIO()
+    base.save(buf, "JPEG", quality=88)
+    return buf.getvalue()
+
+
+def _render_mock_video(image_bytes: bytes) -> bytes:
+    """Render a short silent MP4 from the watermarked still (placeholder for RunPod text-to-video)."""
+    ff = imageio_ffmpeg.get_ffmpeg_exe()
+    with tempfile.TemporaryDirectory() as d:
+        inp = os.path.join(d, "frame.jpg")
+        out = os.path.join(d, "out.mp4")
+        with open(inp, "wb") as f:
+            f.write(image_bytes)
+        vf = ("scale=1280:720:force_original_aspect_ratio=decrease,"
+              "pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p")
+        cmd = [ff, "-y", "-loop", "1", "-i", inp, "-t", "8", "-r", "25",
+               "-vf", vf, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", out]
+        subprocess.run(cmd, capture_output=True, check=True)
+        with open(out, "rb") as f:
+            return f.read()
+
+
+async def run_video_job(job_id: str, news_doc: dict):
+    await db.video_jobs.update_one({"id": job_id}, {"$set": {"status": "processing", "updated_at": now_iso()}})
+    try:
+        runpod_power("start")
+        logo = await get_watermark_logo()
+        base = await asyncio.to_thread(_load_image_sync, news_doc.get("image_url"))
+        wm_bytes = await asyncio.to_thread(_compose_watermarked, base, logo)
+        wm_url = await asyncio.to_thread(host_image_bytes, wm_bytes, "image/jpeg")
+
+        video_bytes = await asyncio.to_thread(_render_mock_video, wm_bytes)
+        vpath = f"{APP_NAME}/video/{uuid.uuid4()}.mp4"
+        vres = await asyncio.to_thread(put_object, vpath, video_bytes, "video/mp4")
+        video_url = "/api/images/" + vres["path"]
+
+        await db.video_jobs.update_one({"id": job_id}, {"$set": {
+            "status": "ready_for_approval",
+            "watermarked_image_url": wm_url,
+            "video_url": video_url,
+            "updated_at": now_iso(),
+        }})
+    except Exception as e:
+        logger.exception("video job failed")
+        await db.video_jobs.update_one({"id": job_id}, {"$set": {"status": "failed", "error": str(e), "updated_at": now_iso()}})
+    finally:
+        runpod_power("stop")
+
+
+@api_router.post("/watermark/logo")
+async def upload_watermark_logo(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    data = await file.read()
+    if not data or len(data) > 6_000_000 or not _sniff_image(data):
+        raise HTTPException(status_code=400, detail="Invalid image (must be an image under 6MB)")
+    path = f"{APP_NAME}/watermark/{uuid.uuid4()}.png"
+    await asyncio.to_thread(put_object, path, data, _sniff_image(data))
+    await db.settings.update_one({"key": "watermark"}, {"$set": {"value": {"logo_path": path}}}, upsert=True)
+    return {"logo_url": "/api/images/" + path}
+
+
+@api_router.get("/watermark")
+async def read_watermark(user: dict = Depends(get_current_user)):
+    doc = await db.settings.find_one({"key": "watermark"}, {"_id": 0})
+    path = (doc or {}).get("value", {}).get("logo_path")
+    return {"logo_url": ("/api/images/" + path) if path else None}
+
+
+@api_router.post("/news/{item_id}/generate-video", response_model=VideoJob)
+async def generate_video(item_id: str, user: dict = Depends(get_current_user)):
+    doc = await db.news_items.find_one({"id": item_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="News item not found")
+    script = doc.get("rewritten_content") or doc.get("full_content") or doc.get("original_content") or doc.get("original_title", "")
+    job = VideoJob(news_id=item_id, script_text=script, mocked=not _runpod_ready())
+    await db.video_jobs.insert_one(job.model_dump())
+    asyncio.create_task(run_video_job(job.id, doc))
+    return job
+
+
+@api_router.get("/news/{item_id}/video", response_model=Optional[VideoJob])
+async def get_video_job(item_id: str, user: dict = Depends(get_current_user)):
+    doc = await db.video_jobs.find_one({"news_id": item_id}, {"_id": 0}, sort=[("created_at", -1)])
+    return VideoJob(**doc) if doc else None
+
+
+@api_router.post("/video/{job_id}/approve", response_model=VideoJob)
+async def approve_video(job_id: str, user: dict = Depends(get_current_user)):
+    doc = await db.video_jobs.find_one({"id": job_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Video job not found")
+    if doc["status"] != "ready_for_approval":
+        raise HTTPException(status_code=400, detail="Only a ready video can be approved")
+    now = now_iso()
+    await db.video_jobs.update_one({"id": job_id}, {"$set": {"status": "approved", "approved_at": now, "updated_at": now}})
+    # On approval the watermarked media is attached to the story (website + designing app).
+    await db.news_items.update_one({"id": doc["news_id"]}, {"$set": {
+        "video_url": doc.get("video_url"),
+        "video_image_url": doc.get("watermarked_image_url"),
+        "video_approved_at": now,
+    }})
+    doc.update({"status": "approved", "approved_at": now})
+    return VideoJob(**doc)
+
+
+@api_router.post("/video/{job_id}/reject", response_model=VideoJob)
+async def reject_video(job_id: str, user: dict = Depends(get_current_user)):
+    doc = await db.video_jobs.find_one({"id": job_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Video job not found")
+    await db.video_jobs.update_one({"id": job_id}, {"$set": {"status": "rejected", "updated_at": now_iso()}})
+    doc["status"] = "rejected"
+    return VideoJob(**doc)
 
 
 # ---------- RSS Fetch ----------

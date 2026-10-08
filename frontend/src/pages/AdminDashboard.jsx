@@ -1,10 +1,10 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
 import {
   Sparkles, Send, Loader2, Newspaper, Plus, Clock, CheckCircle2,
-  FileText, Radio, Trash2, X, LogOut, DownloadCloud, Save, RefreshCw, Pencil, ImageIcon, ExternalLink, Settings2, Layers,
+  FileText, Radio, Trash2, X, LogOut, DownloadCloud, Save, RefreshCw, Pencil, ImageIcon, ExternalLink, Settings2, Layers, Video, Film, Upload, ThumbsUp, ThumbsDown,
 } from "lucide-react";
 import api, { apiError, imgSrc } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
@@ -30,6 +30,109 @@ function StatusBadge({ status, id }) {
       <span className={`h-1.5 w-1.5 rounded-full ${meta.dot}`} />
       <Icon className="h-3 w-3" /> {meta.label}
     </span>
+  );
+}
+
+function VideoPanel({ item }) {
+  const [job, setJob] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [acting, setActing] = useState(false);
+  const pollRef = useRef(null);
+
+  const stopPoll = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
+
+  const fetchJob = async () => {
+    try {
+      const { data } = await api.get(`/news/${item.id}/video`);
+      setJob(data);
+      if (data && (data.status === "queued" || data.status === "processing")) startPoll();
+      else stopPoll();
+    } catch (e) { /* ignore */ } finally { setLoading(false); }
+  };
+
+  const startPoll = () => {
+    if (pollRef.current) return;
+    pollRef.current = setInterval(async () => {
+      try {
+        const { data } = await api.get(`/news/${item.id}/video`);
+        setJob(data);
+        if (!data || (data.status !== "queued" && data.status !== "processing")) stopPoll();
+      } catch (e) { /* ignore */ }
+    }, 4000);
+  };
+
+  useEffect(() => { fetchJob(); return stopPoll; }, [item.id]);
+
+  const generate = async () => {
+    setActing(true);
+    try {
+      const { data } = await api.post(`/news/${item.id}/generate-video`);
+      setJob(data);
+      toast.info("वीडियो बन रहा है… (GPU ऑटो-स्टार्ट)");
+      startPoll();
+    } catch (e) { toast.error(apiError(e)); } finally { setActing(false); }
+  };
+
+  const decide = async (action) => {
+    setActing(true);
+    try {
+      const { data } = await api.post(`/video/${job.id}/${action}`);
+      setJob(data);
+      toast.success(action === "approve" ? "वीडियो अनुमोदित — वेबसाइट पर जाएगा" : "वीडियो अस्वीकृत");
+    } catch (e) { toast.error(apiError(e)); } finally { setActing(false); }
+  };
+
+  const st = job?.status;
+  const busyState = st === "queued" || st === "processing";
+
+  return (
+    <div data-testid={`video-panel-${item.id}`} className="mt-3 rounded-xl border border-fuchsia-500/20 bg-fuchsia-500/[0.04] p-3">
+      <p className="mb-2 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-fuchsia-400">
+        <Film className="h-3 w-3" /> AI वीडियो {job?.mocked && <span className="rounded bg-fuchsia-500/20 px-1.5 py-0.5 text-[8px] text-fuchsia-300">MOCK</span>}
+      </p>
+
+      {loading ? (
+        <div className="flex items-center gap-2 text-xs text-zinc-500"><Loader2 className="h-3.5 w-3.5 animate-spin" /> …</div>
+      ) : busyState ? (
+        <div className="flex items-center gap-2 text-xs text-fuchsia-300"><Loader2 className="h-3.5 w-3.5 animate-spin" /> वीडियो रेंडर हो रहा है…</div>
+      ) : st === "failed" ? (
+        <div className="space-y-2">
+          <p className="text-xs text-rose-300">वीडियो बनाने में विफल: {job.error?.slice(0, 80)}</p>
+          <button data-testid={`generate-video-btn-${item.id}`} onClick={generate} disabled={acting}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-fuchsia-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-fuchsia-500 disabled:opacity-60">
+            <RefreshCw className="h-3.5 w-3.5" /> फिर कोशिश करें
+          </button>
+        </div>
+      ) : (st === "ready_for_approval" || st === "approved") ? (
+        <div className="space-y-2">
+          <video data-testid={`video-preview-${item.id}`} src={imgSrc(job.video_url)} controls
+            className="w-full rounded-lg border border-white/10" style={{ maxHeight: 180 }} />
+          {st === "approved" ? (
+            <div className="flex items-center justify-between">
+              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-300"><ThumbsUp className="h-3 w-3" /> अनुमोदित · वेबसाइट पर लाइव</span>
+              <button data-testid={`regenerate-video-btn-${item.id}`} onClick={generate} disabled={acting}
+                className="inline-flex items-center gap-1 text-[11px] text-zinc-400 hover:text-zinc-200"><RefreshCw className="h-3 w-3" /> नया बनाएं</button>
+            </div>
+          ) : (
+            <div className="flex gap-2">
+              <button data-testid={`approve-video-btn-${item.id}`} onClick={() => decide("approve")} disabled={acting}
+                className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-60">
+                <ThumbsUp className="h-3.5 w-3.5" /> अनुमोदित करें
+              </button>
+              <button data-testid={`reject-video-btn-${item.id}`} onClick={() => decide("reject")} disabled={acting}
+                className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-white/10 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-white/5 disabled:opacity-60">
+                <ThumbsDown className="h-3.5 w-3.5" /> अस्वीकार
+              </button>
+            </div>
+          )}
+        </div>
+      ) : (
+        <button data-testid={`generate-video-btn-${item.id}`} onClick={generate} disabled={acting}
+          className="inline-flex items-center gap-2 rounded-lg bg-fuchsia-600 px-3 py-2 text-xs font-semibold text-white transition-all hover:bg-fuchsia-500 active:scale-[0.97] disabled:opacity-60">
+          {acting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Video className="h-3.5 w-3.5" />} Generate Video
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -193,6 +296,8 @@ function AdminNewsCard({ item, busy, onRewrite, onReRewrite, onSave, onPublish, 
           </button>
         </div>
 
+        <VideoPanel item={item} />
+
         {(item.resolved_url || item.source_url) && (
           <a
             data-testid={`source-link-${item.id}`}
@@ -304,12 +409,28 @@ function SchedulerModal({ open, onClose, onReload }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [maint, setMaint] = useState(null); // 'backfill' | 'dedupe'
+  const [logoUrl, setLogoUrl] = useState(null);
+  const [logoUploading, setLogoUploading] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setLoading(true);
     api.get("/fetch-config").then((r) => setRows(r.data.config)).catch((e) => toast.error(apiError(e))).finally(() => setLoading(false));
+    api.get("/watermark").then((r) => setLogoUrl(r.data.logo_url)).catch(() => {});
   }, [open]);
+
+  const uploadLogo = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setLogoUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const { data } = await api.post("/watermark/logo", fd, { headers: { "Content-Type": "multipart/form-data" } });
+      setLogoUrl(data.logo_url);
+      toast.success("वॉटरमार्क लोगो सहेजा गया");
+    } catch (err) { toast.error(apiError(err)); } finally { setLogoUploading(false); }
+  };
 
   const update = (i, key, val) => setRows((p) => p.map((r, idx) => (idx === i ? { ...r, [key]: val } : r)));
 
@@ -351,6 +472,19 @@ function SchedulerModal({ open, onClose, onReload }) {
           <button data-testid="close-scheduler-btn" onClick={onClose} className="text-zinc-500 hover:text-zinc-200"><X className="h-5 w-5" /></button>
         </div>
         <p className="mb-4 text-xs text-zinc-500">हर घंटे चलने वाले ऑटो-फेच और “Fetch Now” के लिए श्रेणियाँ, खोज शब्द और कितनी खबरें लानी हैं, यह चुनें। कुल सक्षम: <span className="font-semibold text-rose-300">{total}</span> खबरें/फेच।</p>
+
+        {/* Watermark logo */}
+        <div className="mb-4 flex items-center gap-3 rounded-xl border border-white/10 bg-black/20 p-3">
+          <div className="flex-1">
+            <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">वॉटरमार्क लोगो · Watermark Logo</p>
+            <p className="mt-0.5 text-xs text-zinc-500">वीडियो और फोटो पर यह लोगो लगेगा (PNG पारदर्शी बेहतर)।</p>
+          </div>
+          {logoUrl && <img src={imgSrc(logoUrl)} alt="logo" data-testid="watermark-logo-preview" className="h-10 rounded bg-white/5 object-contain px-1" />}
+          <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-zinc-100 hover:bg-white/10">
+            {logoUploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />} {logoUrl ? "बदलें" : "अपलोड"}
+            <input data-testid="watermark-logo-input" type="file" accept="image/*" onChange={uploadLogo} className="hidden" disabled={logoUploading} />
+          </label>
+        </div>
 
         {/* Maintenance */}
         <div className="mb-4 flex flex-wrap gap-2 rounded-xl border border-white/10 bg-black/20 p-3">
