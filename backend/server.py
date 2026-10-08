@@ -32,6 +32,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, ConfigDict, EmailStr
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
+from emergentintegrations.llm.openai import OpenAITextToSpeech
 
 # ---------- Config ----------
 mongo_url = os.environ['MONGO_URL']
@@ -702,21 +703,44 @@ def _compose_watermarked(base: Optional[Image.Image], logo: Optional[Image.Image
     return buf.getvalue()
 
 
-def _render_mock_video(image_bytes: bytes) -> bytes:
-    """Render a short silent MP4 from the watermarked still (placeholder for RunPod text-to-video)."""
+def _render_mock_video(image_bytes: bytes, audio_bytes: Optional[bytes] = None) -> bytes:
+    """Render a short MP4 from the watermarked still + optional Hindi narration audio
+    (placeholder for RunPod text-to-video + voice cloning)."""
     ff = imageio_ffmpeg.get_ffmpeg_exe()
+    vf = ("scale=1280:720:force_original_aspect_ratio=decrease,"
+          "pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p")
     with tempfile.TemporaryDirectory() as d:
         inp = os.path.join(d, "frame.jpg")
         out = os.path.join(d, "out.mp4")
         with open(inp, "wb") as f:
             f.write(image_bytes)
-        vf = ("scale=1280:720:force_original_aspect_ratio=decrease,"
-              "pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p")
-        cmd = [ff, "-y", "-loop", "1", "-i", inp, "-t", "8", "-r", "25",
-               "-vf", vf, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", out]
-        subprocess.run(cmd, capture_output=True, check=True, timeout=60)
+        if audio_bytes:
+            aud = os.path.join(d, "voice.mp3")
+            with open(aud, "wb") as f:
+                f.write(audio_bytes)
+            cmd = [ff, "-y", "-loop", "1", "-i", inp, "-i", aud, "-vf", vf,
+                   "-c:v", "libx264", "-tune", "stillimage", "-c:a", "aac", "-b:a", "128k",
+                   "-pix_fmt", "yuv420p", "-shortest", "-movflags", "+faststart", out]
+        else:
+            cmd = [ff, "-y", "-loop", "1", "-i", inp, "-t", "8", "-r", "25",
+                   "-vf", vf, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", out]
+        subprocess.run(cmd, capture_output=True, check=True, timeout=120)
         with open(out, "rb") as f:
             return f.read()
+
+
+async def generate_narration(text: str) -> Optional[bytes]:
+    """Hindi narration via OpenAI TTS (placeholder for RunPod voice cloning)."""
+    text = (text or "").strip()
+    if not text:
+        return None
+    text = text[:700]
+    try:
+        tts = OpenAITextToSpeech(api_key=EMERGENT_LLM_KEY)
+        return await tts.generate_speech(text=text, model="tts-1", voice="onyx")
+    except Exception as e:
+        logger.warning("TTS narration failed: %s", e)
+        return None
 
 
 _video_sem = asyncio.Semaphore(2)
@@ -732,7 +756,12 @@ async def run_video_job(job_id: str, news_doc: dict):
             wm_bytes = await asyncio.to_thread(_compose_watermarked, base, logo)
             wm_url = await asyncio.to_thread(host_image_bytes, wm_bytes, "image/jpeg")
 
-            video_bytes = await asyncio.to_thread(_render_mock_video, wm_bytes)
+            narration_text = ((news_doc.get("rewritten_title") or news_doc.get("original_title") or "") + "। "
+                              + (news_doc.get("rewritten_content") or news_doc.get("full_content")
+                                 or news_doc.get("original_content") or "")).strip()
+            audio_bytes = await generate_narration(narration_text)
+
+            video_bytes = await asyncio.to_thread(_render_mock_video, wm_bytes, audio_bytes)
             vpath = f"{APP_NAME}/video/{uuid.uuid4()}.mp4"
             vres = await asyncio.to_thread(put_object, vpath, video_bytes, "video/mp4")
             video_url = "/api/images/" + vres["path"]
@@ -741,6 +770,7 @@ async def run_video_job(job_id: str, news_doc: dict):
                 "status": "ready_for_approval",
                 "watermarked_image_url": wm_url,
                 "video_url": video_url,
+                "voice_model": "openai-tts-1/onyx" if audio_bytes else "none",
                 "updated_at": now_iso(),
             }})
         except Exception as e:

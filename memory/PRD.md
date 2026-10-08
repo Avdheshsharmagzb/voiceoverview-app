@@ -49,6 +49,12 @@ Pending_Review → (Approve for Rewrite / AI) → Rewritten_Pending_Publish → 
   - RunPod seam: runpod_power(start/stop) uses RUNPOD_API_KEY/RUNPOD_POD_ID/RUNPOD_INFERENCE_URL env
     (placeholders → MOCK). Render concurrency capped (semaphore 2), ffmpeg timeout 60s.
   - Tested: backend 47/47, frontend 100%
+- 2026-10-08 (Phase 5b): Hindi Voice Narration in videos
+  - OpenAI TTS (tts-1, voice "onyx") via Emergent key generates Hindi narration from the story
+    (headline + body, capped ~700 chars ≈ ~55s clip), merged into the MP4 audio track via ffmpeg
+  - voice_model recorded on the job ("openai-tts-1/onyx"); silent fallback if TTS fails
+  - NOTE: OpenAI voices speak Hindi intelligibly but with a mild English accent (provider ceiling);
+    native cloned voice will arrive via RunPod. Render+TTS ≈ 25-40s per clip.
 
 ## RunPod wiring (when ready)
 - Set RUNPOD_API_KEY, RUNPOD_POD_ID (real values) in backend/.env to enable auto start/stop.

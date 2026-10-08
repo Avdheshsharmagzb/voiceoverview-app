@@ -94,7 +94,7 @@ function VideoPanel({ item }) {
       {loading ? (
         <div className="flex items-center gap-2 text-xs text-zinc-500"><Loader2 className="h-3.5 w-3.5 animate-spin" /> …</div>
       ) : busyState ? (
-        <div className="flex items-center gap-2 text-xs text-fuchsia-300"><Loader2 className="h-3.5 w-3.5 animate-spin" /> वीडियो रेंडर हो रहा है…</div>
+        <div className="flex items-center gap-2 text-xs text-fuchsia-300"><Loader2 className="h-3.5 w-3.5 animate-spin" /> वीडियो + हिंदी नैरेशन बन रहा है… (~1 मिनट)</div>
       ) : st === "failed" ? (
         <div className="space-y-2">
           <p className="text-xs text-rose-300">वीडियो बनाने में विफल: {job.error?.slice(0, 80)}</p>
