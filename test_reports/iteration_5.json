@@ -1,0 +1,33 @@
+{
+  "summary": "Phase-5 testing of Manual Composer (/admin/compose) + upload-image + /api/news/manual. 39/39 backend pytest tests pass (added 9 new for upload-image auth/success/non-image-reject/oversize-reject, news/manual auth, pending-review path, direct-publish path with public-feed verification, empty-content rejection). Playwright validated end-to-end: login → compose-nav-btn → fill title/body/category → upload PNG (preview visible via compose-image-preview) → compose-publish-btn navigates to public feed where story shows (toast 'खबर सीधे प्रकाशित हो गई' visible). compose-review-btn creates Pending_Review item and returns to /admin where it is visible.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "upload_image reads full file into memory before size check — a malicious client can stream >6MB and OOM the worker. Should enforce size via Content-Length / chunked read with a hard cap.",
+    "upload_image accepts any file.content_type the client claims (image/*). No magic-byte sniffing — a .exe could be stored as image/jpeg. Consider `imghdr` / Pillow verify, or at least a MIME sniff on the first N bytes.",
+    "/api/news/manual publish=true copies original_title/content verbatim to rewritten_* and marks Published. There is no HTML sanitization — admin-pasted content could inject <script> if the public feed ever renders HTML (currently plain text, safe for now).",
+    "ManualNews allows image_url to be any arbitrary string (including external http URLs or garbage). Composer only uses hosted /api/images/... but the API itself does not restrict — consider validating prefix for consistency with the 'own hosted images only' story.",
+    "No cleanup of orphaned /api/images objects when a news item is deleted — object storage will grow unbounded. Low priority but worth noting.",
+    "Compose.jsx mounts GET /api/categories without AbortController; fast unmount could leak the request. Minor.",
+    "Still open from prior iterations: AdminDashboard.jsx > 500 lines, CORS_ORIGINS='*', no auth rate-limit, backfill asyncio.create_task not bounded."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (+9 tests for upload-image and /api/news/manual Phase 5)"
+  ],
+  "success_rate": {"backend": "100% (39/39)", "frontend": "100% (compose publish + review flows)"},
+  "test_credentials": "admin@samvad.news / admin123",
+  "seed_data_creation": "Created 2 TEST_PLAY_* items during Playwright run; cleaned up post-test (verified removed=2).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Composer page is at /admin/compose. Nav from Admin dashboard via data-testid=compose-nav-btn. Testids: compose-title-input, compose-body-input, compose-category-select, compose-source-input, compose-image-input (hidden; use set_input_files on it directly, do not click the dropzone label), compose-image-preview, compose-remove-image, compose-review-btn, compose-rewrite-btn, compose-publish-btn. Publish navigates to '/' (public feed), review and rewrite navigate to '/admin'. /api/upload-image returns {url:'/api/images/samvad/news/<uuid>.ext'}. /api/news/manual with publish=true requires non-empty content (400 otherwise), copies original_title->rewritten_title verbatim and sets published_at + status=Published.",
+  "rca of the issue": "N/A — all tests pass."
+}

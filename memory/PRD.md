@@ -36,17 +36,18 @@ Pending_Review → (Approve for Rewrite / AI) → Rewritten_Pending_Publish → 
 - 2026-10-02 (Phase 3a): Full-article extraction at rewrite time (gnewsdecoder + trafilatura)
 - 2026-10-02 (Phase 3b): Image Library (og:image), Prefetch On Import (background enrichment),
   Fetch Scheduler UI (/api/fetch-config), Source Link Display
-- 2026-10-02 (Phase 3c):
-  - Image Hosting: publisher photos downloaded + stored in Emergent object storage; served via public
-    GET /api/images/{path} (prefix-restricted); image_url = /api/images/samvad/news/{uuid}.ext
-  - Backfill: POST /api/news/backfill enriches all existing items missing text/image (bg, single-flight guard)
-  - Smart Dedupe: POST /api/news/dedupe removes near-duplicate non-published items (title Jaccard >=0.6)
-  - Backfill + Dedupe buttons in the Fetch Scheduler modal; frontend imgSrc() resolves hosted paths
-  - Tested: backend 31/31, frontend 100%
+- 2026-10-02 (Phase 3c): Image Hosting (object storage), Backfill, Smart Dedupe
+- 2026-10-02 (Phase 4): Manual Composer
+  - Dedicated editor at /admin/compose: paste external news text + upload a hosted custom photo
+  - POST /api/upload-image (multipart → object storage, magic-byte validated) + POST /api/news/manual
+  - Three actions: send to review queue, save + AI-rewrite now, or publish directly (bypass rewrite)
+  - Direct publish maps pasted title/body → rewritten fields and shows immediately on the public feed
+  - Tested: backend 39/39, frontend 100%
 
 ## Notes / Known limitations
-- Manual Add-News photo uploads still stored as base64 data URLs inline (fetched images are hosted in object storage).
-- Object storage has no delete API (soft-delete pattern); orphaned images from dedupe/delete are not purged.
+- Quick Add modal still stores its image as base64 inline; the Composer uses hosted object-storage uploads.
+- Object storage has no delete API; images from deleted/deduped items are not purged.
+- No HTML sanitization on manual content (public feed renders plain text only — safe currently).
 - Admin registration is open (any visitor can create an admin account).
 
 ## Backlog

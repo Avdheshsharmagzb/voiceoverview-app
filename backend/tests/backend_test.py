@@ -351,3 +351,110 @@ def test_approve_rewrite_hosts_image_internally(session, auth_headers):
         assert img.headers.get("content-type", "").startswith("image/")
     # resolved_url and/or full_content should also typically be set
     assert data.get("full_content") or data.get("resolved_url"), "Expected enrichment to set full_content or resolved_url"
+
+
+
+# ---------- Phase 5: Manual Composer (/api/upload-image, /api/news/manual) ----------
+# 1x1 PNG
+_PNG_1x1 = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06"
+    b"\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\xf8\xcf\xc0\x00\x00"
+    b"\x00\x03\x00\x01\x5b\x7e\xe3\x1a\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+
+def test_upload_image_requires_auth(session):
+    files = {"file": ("x.png", _PNG_1x1, "image/png")}
+    r = requests.post(f"{API}/upload-image", files=files)
+    assert r.status_code == 401
+
+
+def test_upload_image_success_and_fetch(token):
+    files = {"file": ("tiny.png", _PNG_1x1, "image/png")}
+    r = requests.post(f"{API}/upload-image", files=files,
+                     headers={"Authorization": f"Bearer {token}"}, timeout=60)
+    assert r.status_code == 200, r.text
+    url = r.json()["url"]
+    assert url.startswith("/api/images/samvad/")
+    # publicly fetchable
+    img = requests.get(BASE_URL + url, timeout=30)
+    assert img.status_code == 200
+    assert img.headers.get("content-type", "").startswith("image/")
+
+
+def test_upload_image_rejects_non_image(token):
+    files = {"file": ("note.txt", b"hello world", "text/plain")}
+    r = requests.post(f"{API}/upload-image", files=files,
+                     headers={"Authorization": f"Bearer {token}"}, timeout=30)
+    assert r.status_code == 400
+
+
+def test_upload_image_rejects_oversize(token):
+    big = b"\x00" * (6_000_001)
+    files = {"file": ("big.png", big, "image/png")}
+    r = requests.post(f"{API}/upload-image", files=files,
+                     headers={"Authorization": f"Bearer {token}"}, timeout=60)
+    assert r.status_code == 400
+
+
+def test_news_manual_requires_auth(session):
+    r = session.post(f"{API}/news/manual", json={"original_title": "TEST_x"})
+    assert r.status_code == 401
+
+
+def test_news_manual_pending_review(session, auth_headers):
+    payload = {
+        "original_title": "TEST_manual_pending शीर्षक",
+        "original_content": "TEST_manual pending content body",
+        "category": "दिल्ली",
+        "source": "TEST_Composer",
+        "image_url": "/api/images/samvad/news/fake.png",
+        "publish": False,
+    }
+    r = session.post(f"{API}/news/manual", json=payload, headers=auth_headers)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    try:
+        assert data["status"] == "Pending_Review"
+        assert data["original_title"] == payload["original_title"]
+        assert data["original_content"] == payload["original_content"]
+        assert data["category"] == payload["category"]
+        assert data["source"] == payload["source"]
+        assert data["image_url"] == payload["image_url"]
+        assert data.get("rewritten_title") in (None, "")
+        assert data.get("published_at") in (None, "")
+        # GET verifies persistence
+        all_items = session.get(f"{API}/news", headers=auth_headers).json()
+        assert any(i["id"] == data["id"] and i["status"] == "Pending_Review" for i in all_items)
+    finally:
+        session.delete(f"{API}/news/{data['id']}", headers=auth_headers)
+
+
+def test_news_manual_publish_direct(session, auth_headers):
+    payload = {
+        "original_title": "TEST_manual_published शीर्षक",
+        "original_content": "TEST_manual published content body text",
+        "category": "अर्थव्यवस्था",
+        "source": "TEST_Composer",
+        "publish": True,
+    }
+    r = session.post(f"{API}/news/manual", json=payload, headers=auth_headers)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    try:
+        assert data["status"] == "Published"
+        assert data["rewritten_title"] == payload["original_title"]
+        assert data["rewritten_content"] == payload["original_content"]
+        assert data["published_at"]
+        # Appears on public feed
+        pub = session.get(f"{API}/public/news").json()
+        assert data["id"] in [i["id"] for i in pub]
+    finally:
+        session.delete(f"{API}/news/{data['id']}", headers=auth_headers)
+
+
+def test_news_manual_publish_rejects_empty_content(session, auth_headers):
+    r = session.post(f"{API}/news/manual",
+                     json={"original_title": "TEST_empty", "original_content": "", "publish": True},
+                     headers=auth_headers)
+    assert r.status_code == 400
