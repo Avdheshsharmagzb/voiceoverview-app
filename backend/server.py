@@ -714,36 +714,40 @@ def _render_mock_video(image_bytes: bytes) -> bytes:
               "pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p")
         cmd = [ff, "-y", "-loop", "1", "-i", inp, "-t", "8", "-r", "25",
                "-vf", vf, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", out]
-        subprocess.run(cmd, capture_output=True, check=True)
+        subprocess.run(cmd, capture_output=True, check=True, timeout=60)
         with open(out, "rb") as f:
             return f.read()
 
 
+_video_sem = asyncio.Semaphore(2)
+
+
 async def run_video_job(job_id: str, news_doc: dict):
-    await db.video_jobs.update_one({"id": job_id}, {"$set": {"status": "processing", "updated_at": now_iso()}})
-    try:
-        runpod_power("start")
-        logo = await get_watermark_logo()
-        base = await asyncio.to_thread(_load_image_sync, news_doc.get("image_url"))
-        wm_bytes = await asyncio.to_thread(_compose_watermarked, base, logo)
-        wm_url = await asyncio.to_thread(host_image_bytes, wm_bytes, "image/jpeg")
+    async with _video_sem:
+        await db.video_jobs.update_one({"id": job_id}, {"$set": {"status": "processing", "updated_at": now_iso()}})
+        try:
+            runpod_power("start")
+            logo = await get_watermark_logo()
+            base = await asyncio.to_thread(_load_image_sync, news_doc.get("image_url"))
+            wm_bytes = await asyncio.to_thread(_compose_watermarked, base, logo)
+            wm_url = await asyncio.to_thread(host_image_bytes, wm_bytes, "image/jpeg")
 
-        video_bytes = await asyncio.to_thread(_render_mock_video, wm_bytes)
-        vpath = f"{APP_NAME}/video/{uuid.uuid4()}.mp4"
-        vres = await asyncio.to_thread(put_object, vpath, video_bytes, "video/mp4")
-        video_url = "/api/images/" + vres["path"]
+            video_bytes = await asyncio.to_thread(_render_mock_video, wm_bytes)
+            vpath = f"{APP_NAME}/video/{uuid.uuid4()}.mp4"
+            vres = await asyncio.to_thread(put_object, vpath, video_bytes, "video/mp4")
+            video_url = "/api/images/" + vres["path"]
 
-        await db.video_jobs.update_one({"id": job_id}, {"$set": {
-            "status": "ready_for_approval",
-            "watermarked_image_url": wm_url,
-            "video_url": video_url,
-            "updated_at": now_iso(),
-        }})
-    except Exception as e:
-        logger.exception("video job failed")
-        await db.video_jobs.update_one({"id": job_id}, {"$set": {"status": "failed", "error": str(e), "updated_at": now_iso()}})
-    finally:
-        runpod_power("stop")
+            await db.video_jobs.update_one({"id": job_id}, {"$set": {
+                "status": "ready_for_approval",
+                "watermarked_image_url": wm_url,
+                "video_url": video_url,
+                "updated_at": now_iso(),
+            }})
+        except Exception as e:
+            logger.exception("video job failed")
+            await db.video_jobs.update_one({"id": job_id}, {"$set": {"status": "failed", "error": str(e), "updated_at": now_iso()}})
+        finally:
+            runpod_power("stop")
 
 
 @api_router.post("/watermark/logo")

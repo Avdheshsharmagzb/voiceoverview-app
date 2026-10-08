@@ -364,13 +364,13 @@ _PNG_1x1 = (
 
 
 def test_upload_image_requires_auth(session):
-    files = {"file": ("x.png", _PNG_1x1, "image/png")}
+    files = {"file": ("x.png", _PNG_VALID, "image/png")}
     r = requests.post(f"{API}/upload-image", files=files)
     assert r.status_code == 401
 
 
 def test_upload_image_success_and_fetch(token):
-    files = {"file": ("tiny.png", _PNG_1x1, "image/png")}
+    files = {"file": ("tiny.png", _PNG_VALID, "image/png")}
     r = requests.post(f"{API}/upload-image", files=files,
                      headers={"Authorization": f"Bearer {token}"}, timeout=60)
     assert r.status_code == 200, r.text
@@ -458,3 +458,151 @@ def test_news_manual_publish_rejects_empty_content(session, auth_headers):
                      json={"original_title": "TEST_empty", "original_content": "", "publish": True},
                      headers=auth_headers)
     assert r.status_code == 400
+
+
+# ---------- Phase 6: Watermark + AI Video Generation (MOCKED RunPod) ----------
+import time
+import io as _io
+from PIL import Image as _PILImage
+
+
+def _valid_png_bytes(size=(64, 64), color=(255, 0, 128, 255)):
+    img = _PILImage.new("RGBA", size, color)
+    buf = _io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+_PNG_VALID = _valid_png_bytes()
+
+# minimal valid PNG (reused _PNG_1x1 above)
+
+
+def test_watermark_logo_requires_auth(session):
+    files = {"file": ("logo.png", _PNG_VALID, "image/png")}
+    r = requests.post(f"{API}/watermark/logo", files=files)
+    assert r.status_code == 401
+
+
+def test_watermark_get_requires_auth(session):
+    r = session.get(f"{API}/watermark")
+    assert r.status_code == 401
+
+
+def test_watermark_logo_upload_and_get(token):
+    files = {"file": ("logo.png", _PNG_VALID, "image/png")}
+    r = requests.post(f"{API}/watermark/logo", files=files,
+                     headers={"Authorization": f"Bearer {token}"}, timeout=30)
+    assert r.status_code == 200, r.text
+    assert r.json()["logo_url"].startswith("/api/images/")
+
+    g = requests.get(f"{API}/watermark", headers={"Authorization": f"Bearer {token}"})
+    assert g.status_code == 200
+    url = g.json()["logo_url"]
+    assert url and url.startswith("/api/images/")
+    img = requests.get(BASE_URL + url, timeout=30)
+    assert img.status_code == 200
+    assert img.headers.get("content-type", "").startswith("image/")
+
+
+def test_watermark_rejects_non_image(token):
+    files = {"file": ("x.txt", b"nope", "text/plain")}
+    r = requests.post(f"{API}/watermark/logo", files=files,
+                     headers={"Authorization": f"Bearer {token}"}, timeout=30)
+    assert r.status_code == 400
+
+
+def test_generate_video_requires_auth(session):
+    r = session.post(f"{API}/news/does-not-matter/generate-video")
+    assert r.status_code == 401
+
+
+def test_generate_video_404_unknown(session, auth_headers):
+    r = session.post(f"{API}/news/nonexistent-id-xyz/generate-video", headers=auth_headers)
+    assert r.status_code == 404
+
+
+def _create_news_with_image(session, auth_headers):
+    # No image_url => backend uses default placeholder base image for watermarking.
+    payload = {
+        "original_title": "TEST_video शीर्षक",
+        "original_content": "टेस्ट वीडियो जनरेशन के लिए सामग्री।",
+        "category": "राष्ट्रीय",
+        "source": "TEST_video",
+        "publish": False,
+    }
+    r = session.post(f"{API}/news/manual", json=payload, headers=auth_headers)
+    assert r.status_code == 200
+    return r.json()
+
+
+def test_video_full_cycle_generate_poll_approve(session, auth_headers):
+    item = _create_news_with_image(session, auth_headers)
+    item_id = item["id"]
+    try:
+        # queued
+        r = session.post(f"{API}/news/{item_id}/generate-video", headers=auth_headers)
+        assert r.status_code == 200
+        job = r.json()
+        assert job["news_id"] == item_id
+        assert job["status"] in ("queued", "processing")
+        assert job["mocked"] is True
+
+        # Poll up to ~25s
+        job_id = job["id"]
+        final = None
+        for _ in range(25):
+            time.sleep(1)
+            g = session.get(f"{API}/news/{item_id}/video", headers=auth_headers)
+            assert g.status_code == 200
+            cur = g.json()
+            if cur and cur["status"] not in ("queued", "processing"):
+                final = cur
+                break
+        assert final is not None, "video job did not finish within 25s"
+        assert final["status"] == "ready_for_approval", f"unexpected status: {final}"
+        assert final["video_url"] and final["video_url"].startswith("/api/images/samvad/video/")
+        assert final["video_url"].endswith(".mp4")
+        assert final["watermarked_image_url"] and final["watermarked_image_url"].startswith("/api/images/")
+
+        # video is served as video/mp4
+        vr = requests.get(BASE_URL + final["video_url"], timeout=30)
+        assert vr.status_code == 200
+        assert vr.headers.get("content-type", "").startswith("video/mp4")
+        assert len(vr.content) > 1000
+
+        # Approve attaches to news item
+        ap = session.post(f"{API}/video/{job_id}/approve", headers=auth_headers)
+        assert ap.status_code == 200
+        assert ap.json()["status"] == "approved"
+
+        items = session.get(f"{API}/news", headers=auth_headers).json()
+        news = next(i for i in items if i["id"] == item_id)
+        assert news.get("video_url") == final["video_url"]
+        assert news.get("video_image_url") == final["watermarked_image_url"]
+        assert news.get("video_approved_at")
+
+        # Approving already-approved -> 400
+        again = session.post(f"{API}/video/{job_id}/approve", headers=auth_headers)
+        assert again.status_code == 400
+    finally:
+        session.delete(f"{API}/news/{item_id}", headers=auth_headers)
+
+
+def test_video_reject(session, auth_headers):
+    item = _create_news_with_image(session, auth_headers)
+    item_id = item["id"]
+    try:
+        r = session.post(f"{API}/news/{item_id}/generate-video", headers=auth_headers)
+        job_id = r.json()["id"]
+        # wait until ready
+        for _ in range(25):
+            time.sleep(1)
+            cur = session.get(f"{API}/news/{item_id}/video", headers=auth_headers).json()
+            if cur and cur["status"] == "ready_for_approval":
+                break
+        rj = session.post(f"{API}/video/{job_id}/reject", headers=auth_headers)
+        assert rj.status_code == 200
+        assert rj.json()["status"] == "rejected"
+    finally:
+        session.delete(f"{API}/news/{item_id}", headers=auth_headers)

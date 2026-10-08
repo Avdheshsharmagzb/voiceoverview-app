@@ -37,17 +37,28 @@ Pending_Review → (Approve for Rewrite / AI) → Rewritten_Pending_Publish → 
 - 2026-10-02 (Phase 3b): Image Library (og:image), Prefetch On Import (background enrichment),
   Fetch Scheduler UI (/api/fetch-config), Source Link Display
 - 2026-10-02 (Phase 3c): Image Hosting (object storage), Backfill, Smart Dedupe
-- 2026-10-02 (Phase 4): Manual Composer
-  - Dedicated editor at /admin/compose: paste external news text + upload a hosted custom photo
-  - POST /api/upload-image (multipart → object storage, magic-byte validated) + POST /api/news/manual
-  - Three actions: send to review queue, save + AI-rewrite now, or publish directly (bypass rewrite)
-  - Direct publish maps pasted title/body → rewritten fields and shows immediately on the public feed
-  - Tested: backend 39/39, frontend 100%
+- 2026-10-02 (Phase 4): Manual Composer (paste + hosted photo + review/rewrite/publish-direct)
+- 2026-10-08 (Phase 5): AI Video generation (RunPod-orchestrated, MOCKED until pod endpoint wired)
+  - "Generate Video" per story → background job: auto GPU start/stop (stubbed), watermarked still (Pillow)
+    + short silent MP4 (ffmpeg via imageio-ffmpeg) standing in for text-to-video + voice cloning
+  - Admin uploads their own watermark LOGO (Scheduler modal); logo overlaid on photo/video
+  - Approval gate: video+watermarked photo show on admin card; on APPROVE they attach to the story
+    (video_url/video_image_url) and the public feed plays the video on Published items
+  - Endpoints: POST /api/watermark/logo, GET /api/watermark, POST /api/news/{id}/generate-video,
+    GET /api/news/{id}/video, POST /api/video/{id}/approve|reject
+  - RunPod seam: runpod_power(start/stop) uses RUNPOD_API_KEY/RUNPOD_POD_ID/RUNPOD_INFERENCE_URL env
+    (placeholders → MOCK). Render concurrency capped (semaphore 2), ffmpeg timeout 60s.
+  - Tested: backend 47/47, frontend 100%
+
+## RunPod wiring (when ready)
+- Set RUNPOD_API_KEY, RUNPOD_POD_ID (real values) in backend/.env to enable auto start/stop.
+- Set RUNPOD_INFERENCE_URL and replace the body of _render_mock_video / run_video_job's render step
+  with a call to the pod's text-to-video + voice-cloning endpoint; keep watermark + object-storage upload.
 
 ## Notes / Known limitations
-- Quick Add modal still stores its image as base64 inline; the Composer uses hosted object-storage uploads.
-- Object storage has no delete API; images from deleted/deduped items are not purged.
-- No HTML sanitization on manual content (public feed renders plain text only — safe currently).
+- Video + voice cloning are MOCKED (silent still-render) until the RunPod inference endpoint is provided.
+- Quick Add modal image is base64 inline; Composer + watermark + fetched images use object storage.
+- Object storage has no delete API; orphaned images/videos (reject/regenerate/delete) are not purged.
 - Admin registration is open (any visitor can create an admin account).
 
 ## Backlog

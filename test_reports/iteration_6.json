@@ -1,0 +1,34 @@
+{
+  "summary": "Phase-6 testing of AI Video generation + Watermark feature. 47/47 backend pytest tests pass (added 9 new tests: watermark logo upload/get auth+success+non-image reject, generate-video auth+404, full generate->poll(ready_for_approval)->video/mp4 served->approve attaches to news item->re-approve 400, reject). Playwright E2E validated: login, Generate Video button, rendering spinner 'वीडियो रेंडर हो रहा है…', <video> preview appears with src=/api/images/samvad/video/*.mp4, Approve shows 'अनुमोदित · वेबसाइट पर लाइव', watermark logo upload in Scheduler modal (preview visible). RunPod stays MOCK (log line '[RunPod MOCK] start/stop GPU pod'); jobs flagged mocked=true. ffmpeg via imageio-ffmpeg produced ~16KB-220KB mp4s successfully.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "run_video_job uses asyncio.create_task without any concurrency limit — if an admin spam-clicks Generate Video on many stories, multiple ffmpeg subprocesses can run in parallel and OOM the backend worker. Consider a semaphore (e.g. 2) or a job queue.",
+    "approve_video returns 400 for any status != ready_for_approval which also blocks re-approve on an already-approved job (currently tested). That's probably intended, but the error message 'Only a ready video can be approved' is misleading for the already-approved case — consider a distinct 409 or more specific text.",
+    "_render_mock_video uses subprocess.run without a timeout; a corrupt input could hang the worker thread indefinitely. Add timeout=60.",
+    "VideoJob.watermarked_image_url is persisted but never cleaned up on reject/regenerate — orphaned objects will accumulate in storage (same orphan issue as news images).",
+    "The 'approve' handler does not stop/clean an in-flight prior job if the admin clicks Regenerate from an approved state — a new processing job will update video_jobs for the same news_id but the GET /api/news/{id}/video endpoint only returns 'latest by created_at', so the previously-approved copy is still attached to the news item while a new job is in flight. That's probably fine but worth documenting.",
+    "RUNPOD_API_KEY/POD_ID defaulted to '' silently via os.environ.get — placeholder detection relies on startswith('REPLACE_WITH'), so any other non-empty string will attempt a real HTTP call. Consider explicit RUNPOD_MOCK=true toggle.",
+    "Watermark upload uses 6MB limit after full-read (same gap flagged in iter-5 for /api/upload-image).",
+    "Still open from prior: AdminDashboard.jsx > 720 lines, CORS_ORIGINS='*', no auth rate-limit."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (+9 Phase-6 tests, upgraded _PNG to PIL-generated valid PNG)"
+  ],
+  "success_rate": {"backend": "100% (47/47)", "frontend": "100% (login + generate+approve video + watermark upload all green)"},
+  "test_credentials": "admin@samvad.news / admin123",
+  "seed_data_creation": "Backend tests create TEST_video news items and delete them. 1 live video job approved during Playwright E2E on an existing Pending_Review item (video_url + video_image_url now attached but item still Pending_Review — this is expected per spec: video is attached independent of story publish state and will go live when the item is Published).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Video tests take ~5-8s each (ffmpeg render). Watermark input is .hidden (dropzone pattern) — use `wait_for_selector(..., state='attached')` + `set_input_files` directly, do NOT wait for visible. Testids: video-panel-{id}, generate-video-btn-{id}, video-preview-{id}, approve-video-btn-{id}, reject-video-btn-{id}, regenerate-video-btn-{id}, watermark-logo-input, watermark-logo-preview, public-video-{id}. Public feed video rendering was not live-verified (no Published item with approved video existed at test time); verified via code review that PublicFeed.jsx line 98 renders <video data-testid=public-video-{lead.id}> whenever lead.video_url is present, and the backend approve flow attaches video_url to the news_item — so when an admin approves a video on a Published item it will appear on the lead. Regression surface (login, filters, scheduler, logout, add-news) remains functional (prev iter 100%).",
+  "rca of the issue": "N/A — all tests pass."
+}
