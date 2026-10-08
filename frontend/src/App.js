@@ -6,6 +6,7 @@ import { AuthProvider, useAuth } from "@/context/AuthContext";
 import PublicFeed from "@/pages/PublicFeed";
 import Login from "@/pages/Login";
 import AdminDashboard from "@/pages/AdminDashboard";
+import Compose from "@/pages/Compose";
 
 function ProtectedRoute({ children }) {
   const { user } = useAuth();
@@ -30,6 +31,7 @@ function App() {
             <Route path="/" element={<PublicFeed />} />
             <Route path="/login" element={<Login />} />
             <Route path="/admin" element={<ProtectedRoute><AdminDashboard /></ProtectedRoute>} />
+            <Route path="/admin/compose" element={<ProtectedRoute><Compose /></ProtectedRoute>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </BrowserRouter>

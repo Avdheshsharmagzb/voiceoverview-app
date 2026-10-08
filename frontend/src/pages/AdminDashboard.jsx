@@ -506,9 +506,13 @@ export default function AdminDashboard() {  const { user, logout } = useAuth();
               className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm font-semibold text-zinc-100 transition-all hover:bg-white/10">
               <Settings2 className="h-4 w-4" />
             </button>
+            <button data-testid="compose-nav-btn" onClick={() => navigate("/admin/compose")}
+              className="inline-flex items-center gap-2 rounded-xl bg-rose-600 px-4 py-2.5 text-sm font-semibold text-white transition-all hover:bg-rose-500">
+              <Pencil className="h-4 w-4" /> Compose
+            </button>
             <button data-testid="add-news-btn" onClick={() => setModalOpen(true)}
               className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-semibold text-zinc-100 transition-all hover:bg-white/10">
-              <Plus className="h-4 w-4" /> Add
+              <Plus className="h-4 w-4" /> Quick Add
             </button>
             <button data-testid="logout-btn" onClick={doLogout}
               className="inline-flex items-center gap-2 rounded-xl border border-white/10 px-3 py-2.5 text-sm font-medium text-zinc-400 hover:text-zinc-100">

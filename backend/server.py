@@ -21,7 +21,7 @@ import requests
 import feedparser
 import trafilatura
 from googlenewsdecoder import gnewsdecoder
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Header, Response
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Header, Response, UploadFile, File
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, ConfigDict, EmailStr
@@ -97,17 +97,11 @@ def get_object(path: str):
 _IMG_EXT = {"image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif"}
 
 
-def host_image(ext_url: str):
-    """Download a publisher image and store it in our own object storage. Returns an /api/images path."""
-    if not ext_url or not ext_url.startswith("http"):
-        return None
+def host_image_bytes(data: bytes, content_type: str):
     try:
-        r = requests.get(ext_url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
-        r.raise_for_status()
-        ct = r.headers.get("Content-Type", "image/jpeg").split(";")[0].strip().lower()
+        ct = (content_type or "image/jpeg").split(";")[0].strip().lower()
         if not ct.startswith("image/"):
             return None
-        data = r.content
         if not data or len(data) > 6_000_000:
             return None
         ext = _IMG_EXT.get(ct, "jpg")
@@ -115,8 +109,22 @@ def host_image(ext_url: str):
         res = put_object(path, data, ct)
         return "/api/images/" + res["path"]
     except Exception as e:
+        logger.warning("host_image_bytes failed: %s", e)
+        return None
+
+
+def host_image(ext_url: str):
+    """Download a publisher image and store it in our own object storage. Returns an /api/images path."""
+    if not ext_url or not ext_url.startswith("http"):
+        return None
+    try:
+        r = requests.get(ext_url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        r.raise_for_status()
+        return host_image_bytes(r.content, r.headers.get("Content-Type", "image/jpeg"))
+    except Exception as e:
         logger.warning("host_image failed for %s: %s", ext_url[:80], e)
         return None
+
 
 
 
@@ -378,6 +386,46 @@ async def list_news(status: Optional[str] = None, category: Optional[str] = None
 @api_router.post("/news", response_model=NewsItem)
 async def create_news(payload: NewsCreate, user: dict = Depends(get_current_user)):
     item = NewsItem(**payload.model_dump())
+    await db.news_items.insert_one(item.model_dump())
+    return item
+
+
+@api_router.post("/upload-image")
+async def upload_image(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    data = await file.read()
+    url = await asyncio.to_thread(host_image_bytes, data, file.content_type or "image/jpeg")
+    if not url:
+        raise HTTPException(status_code=400, detail="Invalid image (must be an image under 6MB)")
+    return {"url": url}
+
+
+class ManualNews(BaseModel):
+    original_title: str
+    original_content: str = ""
+    category: Optional[str] = "सामान्य"
+    source: Optional[str] = "Manual Entry"
+    image_url: Optional[str] = None
+    publish: bool = False
+
+
+@api_router.post("/news/manual", response_model=NewsItem)
+async def create_manual_news(payload: ManualNews, user: dict = Depends(get_current_user)):
+    if not payload.original_title.strip():
+        raise HTTPException(status_code=400, detail="Title is required")
+    item = NewsItem(
+        original_title=payload.original_title,
+        original_content=payload.original_content,
+        category=payload.category or "सामान्य",
+        source=payload.source or "Manual Entry",
+        image_url=payload.image_url,
+    )
+    if payload.publish:
+        if not payload.original_content.strip():
+            raise HTTPException(status_code=400, detail="Content is required to publish directly")
+        item.rewritten_title = payload.original_title
+        item.rewritten_content = payload.original_content
+        item.status = "Published"
+        item.published_at = now_iso()
     await db.news_items.insert_one(item.model_dump())
     return item
 
